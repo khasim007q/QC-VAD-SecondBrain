@@ -195,10 +195,9 @@ class MainWindow(QMainWindow):
         self.record = rec
         self.current_id = None
         n = len(rec.segments)
-        mins = int(rec.duration_s // 60)
         self.header.setText(
             f"<h2 style='margin:0'>{_esc(rec.title or rec.class_id)}</h2>"
-            f"<span style='color:gray'>{rec.date} · {mins} min · {n} segments · "
+            f"<span style='color:gray'>{rec.date} · {store.fmt_clock(rec.duration_s)} · {n} segments · "
             f"{_esc(Path(rec.audio_path).name)}</span>")
         self.player.stop()
         audio_ok = Path(rec.audio_path).is_file()

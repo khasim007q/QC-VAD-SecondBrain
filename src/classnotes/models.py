@@ -5,7 +5,9 @@ Run directly to set everything up:  uv run python -m classnotes.models
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -63,22 +65,49 @@ def ensure_whisper(progress: Progress = None) -> Path:
     return out
 
 
+_CONVERT_SCRIPT = """
+import sys
+from ctranslate2.converters import TransformersConverter
+repo, out, files = sys.argv[1], sys.argv[2], sys.argv[3].split(",")
+TransformersConverter(repo, copy_files=files).convert(out, quantization="int8_float16", force=True)
+"""
+
+CONVERT_DEPS = ["ctranslate2>=4.5", "transformers>=4.40", "torch", "sentencepiece"]
+
+
+def _uv() -> str:
+    uv = os.environ.get("UV") or shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv is needed once to convert the NLLB model: https://docs.astral.sh/uv/")
+    return uv
+
+
+def convert_command(repo: str, out: Path) -> list[str]:
+    """One-time conversion runs in a throwaway uv environment, so torch (~1 GB) is never
+    part of the app's own environment."""
+    cmd = [_uv(), "run", "--no-project", "--quiet", "--python", "3.12"]
+    for dep in CONVERT_DEPS:
+        cmd += ["--with", dep]
+    return cmd + ["python", "-c", _CONVERT_SCRIPT, repo, str(out), ",".join(NLLB_TOKENIZER_FILES)]
+
+
 def ensure_nllb(progress: Progress = None) -> Path:
     out = nllb_dir()
     if nllb_ready():
         return out
-    try:
-        from ctranslate2.converters import TransformersConverter
-    except ImportError as e:  # pragma: no cover
-        raise RuntimeError("ctranslate2 is not installed") from e
 
     _say(progress, "Downloading NLLB-200 (~2.5 GB) and converting to CTranslate2 int8 (one time)...")
     tmp = out.with_name(out.name + ".tmp")
     if tmp.exists():
         shutil.rmtree(tmp)
-    TransformersConverter(NLLB_REPO, copy_files=NLLB_TOKENIZER_FILES).convert(
-        str(tmp), quantization="int8_float16", force=True
+    proc = subprocess.run(
+        convert_command(NLLB_REPO, tmp),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    if proc.returncode != 0 or not (tmp / "model.bin").is_file():
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-15:])
+        raise RuntimeError(f"NLLB conversion failed:\n{tail}")
     if out.exists():
         shutil.rmtree(out)
     tmp.rename(out)

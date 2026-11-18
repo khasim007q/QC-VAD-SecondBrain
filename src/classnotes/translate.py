@@ -66,18 +66,19 @@ class NllbTranslator:
 
     def __init__(self, model_dir: Path, device: str = "cuda", batch_size: int = 16):
         import ctranslate2
-        from transformers import AutoTokenizer
+        import sentencepiece as spm
 
         compute = "int8_float16" if device == "cuda" else "int8"
         self._tr = ctranslate2.Translator(str(model_dir), device=device, compute_type=compute)
-        self._tok = AutoTokenizer.from_pretrained(str(model_dir), src_lang=self.SRC)
+        self._sp = spm.SentencePieceProcessor(model_file=str(Path(model_dir) / "sentencepiece.bpe.model"))
         self._batch = batch_size
 
     def translate(self, sentences: list[str]) -> list[str]:
         out: list[str] = []
         for i in range(0, len(sentences), self._batch):
             batch = sentences[i:i + self._batch]
-            src = [self._tok.convert_ids_to_tokens(self._tok.encode(s)) for s in batch]
+            # NLLB input format: <src_lang> pieces... </s>; CTranslate2 maps pieces to ids itself.
+            src = [[self.SRC] + self._sp.encode(s, out_type=str) + ["</s>"] for s in batch]
             results = self._tr.translate_batch(
                 src,
                 target_prefix=[[self.TGT]] * len(batch),
@@ -85,7 +86,6 @@ class NllbTranslator:
                 max_decoding_length=256,
             )
             for r in results:
-                tokens = [t for t in r.hypotheses[0] if t != self.TGT]
-                ids = self._tok.convert_tokens_to_ids(tokens)
-                out.append(self._tok.decode(ids, skip_special_tokens=True).strip())
+                tokens = [t for t in r.hypotheses[0] if t not in (self.TGT, "</s>")]
+                out.append(self._sp.decode(tokens).strip())
         return out

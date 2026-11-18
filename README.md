@@ -34,6 +34,10 @@ Design: [docs/design.md](docs/design.md) · Plan: [docs/superpowers/plans](docs/
   Works on CPU too, much slower.
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.12 and all packages for you).
 - ~8 GB free disk for the models (downloaded once).
+- Keep the project in a **short folder path** (e.g. `C:\Projects\QC-VAD-SecondBrain`).
+  Windows' 260-character path limit breaks Python packages installed deep inside very long
+  paths. If you can't move it, point uv at a short environment folder:
+  `set UV_PROJECT_ENVIRONMENT=C:\venvs\classnotes`.
 
 ## Setup
 
@@ -44,7 +48,8 @@ uv run python -m classnotes.models
 
 The second command downloads Whisper large-v3 (~3 GB) and NLLB-200 (~2.5 GB), converts
 NLLB to CTranslate2 int8, and stores both in `%LOCALAPPDATA%\ClassNotes\models`. (The app
-also does this automatically the first time you process a class.)
+also does this automatically the first time you process a class.) The conversion runs once in
+a throwaway uv environment, so PyTorch never becomes part of the app itself.
 
 Check the GPU works:
 
