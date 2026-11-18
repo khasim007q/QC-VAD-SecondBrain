@@ -66,9 +66,16 @@ uv run classnotes
 ```
 
 Then **+ New class** → pick the recording → date and title → **Process**.
-Classes are stored in `Documents\ClassNotes\<date>\`. **Glossary & settings** lets you add
-words Whisper should expect (surah names, Islamic terms, the teacher's common phrases) and
-tune the segmentation.
+Classes are stored in `Documents\ClassNotes\<date>\`. **Glossary & settings** has:
+
+- **Glossary**: words Whisper should expect (surah names, Islamic terms, the teacher's common
+  phrases). It biases Whisper toward the right spelling (e.g. ظہر, not زہر "poison").
+- **Replace before translating**: `urdu = replacement` lines applied to each Urdu sentence
+  before NLLB sees it. The defaults fix mis-spellings found on real class audio
+  (حجرت → ہجرت, مشرقین → مشرکین, ختل → قتل, خریب → قریب), keep honorifics
+  (حضرت → Hazrat, رسول اللہ ﷺ → Rasulullah (SAW)), and fix phrases NLLB inverts
+  (نعوذ باللہ → (God forbid)). The Urdu shown in the notes is never changed.
+- Segmentation tuning.
 
 Without the window:
 

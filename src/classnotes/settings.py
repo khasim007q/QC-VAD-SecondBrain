@@ -6,9 +6,12 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 
 from . import paths
+from .translate import DEFAULT_TERMS
 
+# Passed to Whisper as initial_prompt: biases it toward these spellings.
 DEFAULT_GLOSSARY = (
-    "قرآن، سورۃ، آیت، تفسیر، تجوید، حدیث، اللہ تعالیٰ، رسول اللہ ﷺ، صحابہ، "
+    "قرآن، سورۃ، آیت، تفسیر، تجوید، حدیث، اللہ تعالیٰ، رسول اللہ ﷺ، صحابہ، حضرت ابو بکر صدیق، "
+    "ہجرت، مکہ، مدینہ، قریش، مشرکین، مہاجر، انصار، قتل، قریب، نماز ظہر، نعوذ باللہ، "
     "Quran, Surah, ayah, tafseer, tajweed, hadith"
 )
 
@@ -20,6 +23,7 @@ def _default_library() -> str:
 @dataclass
 class Settings:
     glossary: str = DEFAULT_GLOSSARY
+    terms: str = DEFAULT_TERMS
     min_silence_ms: int = 500
     max_speech_s: float = 20.0
     min_conf: float = 0.7

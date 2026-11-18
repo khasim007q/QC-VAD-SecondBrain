@@ -81,7 +81,9 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(560)
         s = settings
         self.glossary = QPlainTextEdit(s.glossary)
-        self.glossary.setMinimumHeight(110)
+        self.glossary.setMinimumHeight(90)
+        self.terms = QPlainTextEdit(s.terms)
+        self.terms.setMinimumHeight(140)
         self.device = QComboBox()
         self.device.addItems(["auto", "cuda", "cpu"])
         self.device.setCurrentText(s.device)
@@ -99,6 +101,12 @@ class SettingsDialog(QDialog):
         hint.setStyleSheet("color: gray;")
         form.addRow("Glossary", self.glossary)
         form.addRow("", hint)
+        form.addRow("Replace before\ntranslating", self.terms)
+        terms_hint = QLabel("One per line: urdu = replacement. Fixes words Whisper mis-spells or "
+                            "NLLB mistranslates. The Urdu shown in the notes is not changed.")
+        terms_hint.setWordWrap(True)
+        terms_hint.setStyleSheet("color: gray;")
+        form.addRow("", terms_hint)
         form.addRow("Library folder", _browse_row(self.library, "Browse...", self._browse))
         form.addRow("Device", self.device)
         form.addRow("Min. silence between phrases (ms)", self.min_silence)
@@ -127,6 +135,7 @@ class SettingsDialog(QDialog):
 
     def apply(self, s: Settings) -> None:
         s.glossary = self.glossary.toPlainText().strip()
+        s.terms = self.terms.toPlainText().strip() + "\n"
         s.device = self.device.currentText()
         s.library_dir = self.library.text().strip() or s.library_dir
         s.min_silence_ms = self.min_silence.value()

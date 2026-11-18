@@ -10,7 +10,7 @@ from .asr import Asr
 from .segment import SR, LangSpan, bucket_probs, choose_lang, merge_spans
 from .settings import Settings
 from .store import Segment
-from .translate import Translator, split_sentences
+from .translate import Translator, apply_terms, parse_terms, split_sentences
 
 ProgressFn = Callable[[str, float], None]
 
@@ -45,6 +45,7 @@ def run_pipeline(
         on_progress("Detecting language", (i + 1) / len(spans))
 
     merged = merge_spans(lang_spans, max_gap_s=settings.merge_gap_s, max_len_s=settings.merge_max_s)
+    terms = parse_terms(settings.terms)
     total = sum(s.end - s.start for s in merged)
     done = 0
     segments: list[Segment] = []
@@ -56,7 +57,7 @@ def run_pipeline(
         prompt = None if span.lang == "ar" else (settings.glossary or None)
         texts = [t.strip() for t in asr.transcribe(audio[span.start:span.end], span.lang, prompt)]
         texts = [t for t in texts if t]
-        seg = _make_segment(len(segments), span, texts, translator)
+        seg = _make_segment(len(segments), span, texts, translator, terms)
         if seg is not None:
             segments.append(seg)
             on_segment(seg)
@@ -66,15 +67,16 @@ def run_pipeline(
     return segments
 
 
-def _make_segment(idx: int, span: LangSpan, texts: list[str], translator: Translator) -> Segment | None:
+def _make_segment(idx: int, span: LangSpan, texts: list[str], translator: Translator,
+                  terms: list[tuple[str, str]] = ()) -> Segment | None:
     if not texts:
         return None
     if span.lang == "ur":
         sentences = split_sentences(texts)
         if not sentences:
             return None
-        source = " ".join(sentences)
-        text = " ".join(translator.translate(sentences))
+        source = " ".join(sentences)  # stored exactly as heard
+        text = " ".join(translator.translate([apply_terms(s, terms) for s in sentences]))
     elif span.lang == "en":
         source = text = " ".join(texts)
     else:  # Arabic recitation: keep as heard, never translate

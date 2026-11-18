@@ -53,6 +53,61 @@ def split_sentences(texts: list[str], max_chars: int = 300) -> list[str]:
     return out
 
 
+# Replacements applied to each Urdu sentence before translation (the stored Urdu stays as
+# heard). Two kinds: Whisper mis-spellings mapped back to the real word, and terms NLLB gets
+# wrong, given a fixed English form it passes through unchanged. Found on real class audio.
+DEFAULT_TERMS = """\
+# Before translating, replace (left) with (right). One per line. The Urdu shown in the notes is not changed.
+# Honorifics NLLB turns into "the Prophet"
+حضرت = Hazrat
+# The ﷺ symbol makes NLLB drop words ("the Messenger's house" -> "the House of Allah")
+رسول اللہ صلی اللہ علیہ وسلم = Rasulullah (SAW)
+رسول اللہ ﷺ = Rasulullah (SAW)
+رسول اللہ = Rasulullah (SAW)
+صلی اللہ علیہ وسلم = (SAW)
+ﷺ = (SAW)
+# Whisper mis-spellings -> correct word
+حجرت = ہجرت
+مشرقین = مشرکین
+ختل = قتل
+خریب = قریب
+خوریش = Quraysh
+خریش = Quraysh
+قریش = Quraysh
+محاجر = Muhajir
+مہاجر = Muhajir
+انصار = Ansar
+# Phrases NLLB mistranslates badly
+نعوذ باللہ = (God forbid)
+نعوذباللہ = (God forbid)
+نوز باللہ = (God forbid)
+نوزباللہ = (God forbid)
+ظہر = Zuhr
+"""
+
+_NOT_WORD_BEFORE = r"(?<!\w)"
+_NOT_WORD_AFTER = r"(?!\w)"
+
+
+def parse_terms(text: str) -> list[tuple[str, str]]:
+    """Parse 'source = replacement' lines; longest sources first so phrases win over words."""
+    terms = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        src, _, dst = line.partition("=")
+        if src.strip():
+            terms.append((src.strip(), dst.strip()))
+    return sorted(terms, key=lambda t: len(t[0]), reverse=True)
+
+
+def apply_terms(sentence: str, terms: list[tuple[str, str]]) -> str:
+    for src, dst in terms:
+        sentence = re.sub(_NOT_WORD_BEFORE + re.escape(src) + _NOT_WORD_AFTER, dst, sentence)
+    return sentence
+
+
 class Translator(Protocol):
     def translate(self, sentences: list[str]) -> list[str]:
         """Return one English sentence per input, same order."""
@@ -84,6 +139,9 @@ class NllbTranslator:
                 target_prefix=[[self.TGT]] * len(batch),
                 beam_size=4,
                 max_decoding_length=256,
+                # Stops degenerate loops ("no, no, no, ...", "the Companions of the Companions...")
+                no_repeat_ngram_size=4,
+                repetition_penalty=1.1,
             )
             for r in results:
                 tokens = [t for t in r.hypotheses[0] if t not in (self.TGT, "</s>")]

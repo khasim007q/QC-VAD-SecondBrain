@@ -150,3 +150,10 @@ def test_reprocess_backs_up(tmp_path):
     folder = tmp_path / "2026-11-18"
     assert len(list(folder.glob("segments.*.json"))) == 1
     assert not (tmp_path / "2026-11-18-2").exists()
+
+
+def test_pipeline_applies_terms_before_translation_but_keeps_source():
+    spans = [(0, 5, "ur", ["حضرت عمر آئے۔"])]
+    result, _, _, _, tr = run(spans, settings=Settings(terms="حضرت = Hazrat"))
+    assert tr.seen == ["Hazrat عمر آئے۔"]
+    assert result[0].source == "حضرت عمر آئے۔"
