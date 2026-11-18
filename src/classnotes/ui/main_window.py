@@ -41,6 +41,9 @@ class MainWindow(QMainWindow):
         # Sidebar
         self.library = QListWidget()
         self.library.currentRowChanged.connect(self._open_selected)
+        self.library.setStyleSheet(
+            "QListWidget::item { padding: 7px 6px; border-bottom: 1px solid palette(midlight); }"
+            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }")
         self.new_btn = QPushButton("+  New class")
         self.new_btn.setDefault(True)
         self.new_btn.clicked.connect(self.new_class)
