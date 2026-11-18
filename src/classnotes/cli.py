@@ -25,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--date", default=None, help="YYYY-MM-DD (default: file date)")
     ap.add_argument("--library", default=None)
     ap.add_argument("--device", choices=["auto", "cuda", "cpu"], default=None)
+    ap.add_argument("--reprocess", metavar="CLASS_ID", default=None,
+                    help="re-process an existing class (its current notes are kept as a backup)")
     args = ap.parse_args(argv)
 
     settings = Settings.load()
@@ -38,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
     day = args.date or _date.fromtimestamp(path.stat().st_mtime).isoformat()
+    if args.reprocess:
+        old = store.load_record(store.class_dir(library, args.reprocess))
+        day, args.title = old.date, args.title or old.title
 
     asr, tr = get_engines(settings, progress=print)
     t0 = time.time()
@@ -55,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     rec = process_recording(
         audio, str(path.resolve()), args.title or path.stem, day,
         library, asr, tr, settings, on_segment, on_progress, cancelled=lambda: False,
+        class_id=args.reprocess,
     )
     folder = store.class_dir(library, rec.class_id)
     print(f"\nDone in {time.time() - t0:.0f}s: {len(rec.segments)} segments -> {folder}")

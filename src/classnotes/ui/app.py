@@ -28,12 +28,18 @@ def main() -> int:
 
     ensure_streams(paths.data_dir() / "classnotes.log")
 
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from .main_window import MainWindow
 
+    if sys.platform == "win32":  # own taskbar entry and icon instead of python's
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClassNotes.App")
     app = QApplication(sys.argv)
     app.setApplicationName("Class Notes")
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.ico"))))
     app.setStyle("Fusion")
     win = MainWindow()
     win.show()
