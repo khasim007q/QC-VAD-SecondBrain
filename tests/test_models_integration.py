@@ -27,3 +27,25 @@ def test_nllb_does_not_loop():
     grams = [tuple(words[i:i + 4]) for i in range(len(words) - 3)]
     assert len(words) < 60
     assert len(grams) == len(set(grams))
+
+
+def test_whisper_batch_runs_language_and_text_in_one_pass():
+    import numpy as np
+
+    from classnotes.asr import WhisperAsr
+    from classnotes.segment import bucket_probs, choose_lang
+    from classnotes.settings import Settings
+
+    device = "cuda" if models.cuda_available() else "cpu"
+    asr = WhisperAsr(models.whisper_dir(), device, Settings())
+    rng = np.random.default_rng(0)
+    clips = [rng.normal(0, 0.01, 16000 * n).astype(np.float32) for n in (3, 8)]
+    seen = []
+
+    def choose(probs, n):
+        seen.append(n)
+        return choose_lang(bucket_probs(probs), n)
+
+    out = asr.transcribe_batch(clips, {"ur": "قرآن", "en": "Quran", "ar": None}, choose)
+    assert len(out) == 2 and seen == [16000 * 3, 16000 * 8]
+    assert all(lang in ("ur", "en", "ar") and isinstance(texts, list) for lang, _, texts in out)

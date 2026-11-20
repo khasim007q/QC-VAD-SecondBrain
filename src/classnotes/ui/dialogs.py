@@ -87,13 +87,18 @@ class SettingsDialog(QDialog):
         self.device = QComboBox()
         self.device.addItems(["auto", "cuda", "cpu"])
         self.device.setCurrentText(s.device)
+        self.whisper = QComboBox()
+        for name, label in (("large-v3-turbo", "Whisper large-v3-turbo (fast, default)"),
+                            ("large-v3", "Whisper large-v3 (about 2-3x slower)")):
+            self.whisper.addItem(label, name)
+        self.whisper.setCurrentIndex(max(0, self.whisper.findData(s.whisper_model)))
         self.library = QLineEdit(s.library_dir)
         self.min_silence = QSpinBox(minimum=100, maximum=3000, singleStep=100, value=s.min_silence_ms)
         self.max_speech = self._dbl(s.max_speech_s, 5, 30, 1)
         self.min_conf = self._dbl(s.min_conf, 0.5, 0.95, 0.05)
         self.min_dur = self._dbl(s.min_dur_s, 0.5, 5, 0.5)
         self.merge_gap = self._dbl(s.merge_gap_s, 0, 5, 0.5)
-        self.merge_max = self._dbl(s.merge_max_s, 5, 30, 1)
+        self.merge_max = self._dbl(s.merge_max_s, 5, 29, 1)
 
         form = QFormLayout()
         hint = QLabel("Words Whisper should expect: surah names, Islamic terms, the teacher's common phrases.")
@@ -108,12 +113,13 @@ class SettingsDialog(QDialog):
         terms_hint.setStyleSheet("color: gray;")
         form.addRow("", terms_hint)
         form.addRow("Library folder", _browse_row(self.library, "Browse...", self._browse))
+        form.addRow("Speech model", self.whisper)
         form.addRow("Device", self.device)
         form.addRow("Min. silence between phrases (ms)", self.min_silence)
         form.addRow("Max. phrase length (s)", self.max_speech)
         form.addRow("Language confidence needed", self.min_conf)
         form.addRow("Shorter phrases count as Urdu (s)", self.min_dur)
-        form.addRow("Join same-language gaps under (s)", self.merge_gap)
+        form.addRow("Join phrases with gaps under (s)", self.merge_gap)
         form.addRow("Max. joined length (s)", self.merge_max)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -137,6 +143,7 @@ class SettingsDialog(QDialog):
         s.glossary = self.glossary.toPlainText().strip()
         s.terms = self.terms.toPlainText().strip() + "\n"
         s.device = self.device.currentText()
+        s.whisper_model = self.whisper.currentData()
         s.library_dir = self.library.text().strip() or s.library_dir
         s.min_silence_ms = self.min_silence.value()
         s.max_speech_s = self.max_speech.value()

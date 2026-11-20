@@ -101,3 +101,69 @@ def test_srt_skips_recitation_and_formats_time():
     assert "01:02:05,500 --> 01:02:10,000" in blocks[2]
     assert "The last" in blocks[2]
     assert "الْحَمْدُ" not in srt
+
+
+def test_save_retries_when_file_is_briefly_locked(tmp_path, monkeypatch):
+    real = store.os.replace
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError("locked by another process")
+        real(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", flaky)
+    monkeypatch.setattr(store, "RETRY_DELAY_S", 0)
+    folder = store.save_record(make_record(), tmp_path)
+    assert store.load_record(folder) == make_record()
+
+
+def test_locked_export_does_not_lose_the_class(tmp_path, monkeypatch):
+    real = store.os.replace
+
+    def lock_notes(src, dst):
+        if str(dst).endswith("notes.md"):
+            raise PermissionError("notes.md is open elsewhere")
+        real(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", lock_notes)
+    monkeypatch.setattr(store, "RETRY_DELAY_S", 0)
+    folder = store.save_record(make_record(), tmp_path)
+    assert store.load_record(folder) == make_record()
+    assert not list(folder.glob("*.tmp"))
+
+
+def test_locked_segments_file_is_saved_under_another_name(tmp_path, monkeypatch):
+    real = store.os.replace
+
+    def lock_segments(src, dst):
+        if str(dst).endswith("segments.json"):
+            raise PermissionError("segments.json is open elsewhere")
+        real(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", lock_segments)
+    monkeypatch.setattr(store, "RETRY_DELAY_S", 0)
+    import pytest
+
+    with pytest.raises(store.SaveError) as e:
+        store.save_record(make_record(), tmp_path)
+    saved = list((tmp_path / "2026-11-18").glob("segments.recovered-*.json"))
+    assert len(saved) == 1 and saved[0].name in str(e.value)
+    assert store.record_from_dict(json.loads(saved[0].read_text("utf-8"))) == make_record()
+
+
+def test_library_orders_numbered_classes_numerically(tmp_path):
+    for cid in ("2026-11-18", "2026-11-18-2", "2026-11-18-10"):
+        store.save_record(make_record(class_id=cid), tmp_path)
+    assert [r.class_id for r in store.list_library(tmp_path)] == [
+        "2026-11-18-10", "2026-11-18-2", "2026-11-18"]
+
+
+def test_srt_keeps_a_multiline_edit_in_one_block():
+    rec = make_record()
+    rec.segments = [Segment(0, 1, 2, "ur", .9, "x", "a", text_edited="first line\n\nsecond line"),
+                    Segment(1, 3, 4, "en", .9, "b", "b")]
+    blocks = store.render_srt(rec).strip().split("\n\n")
+    assert len(blocks) == 2
+    assert "first line\nsecond line" in blocks[0]

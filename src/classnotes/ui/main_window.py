@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QPalette
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QSlider, QSplitter, QStyle,
-    QTextBrowser, QVBoxLayout, QWidget,
+    QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from .. import store
+from .. import models, store
 from ..settings import Settings
 from .dialogs import AUDIO_FILTER, EditDialog, NewClassDialog, SettingsDialog
-from .segment_view import render_segments_html, segment_at
+from .segment_view import DARK, LIGHT, render_segments_html, segment_at
 from .worker import ProcessWorker
+
+LIVE_REDRAW_MS = 700
 
 
 class MainWindow(QMainWindow):
@@ -26,6 +29,8 @@ class MainWindow(QMainWindow):
         self.settings = settings or Settings.load()
         self.persist = persist_settings
         self.record: store.ClassRecord | None = None
+        self.record_lib: Path | None = None  # library the open class lives in
+        self._reprocess_id: str | None = None
         self.worker: ProcessWorker | None = None
         self.live_segments: list[store.Segment] = []
         self.current_id: int | None = None
@@ -112,6 +117,10 @@ class MainWindow(QMainWindow):
         self.view = QTextBrowser()
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self._on_link)
+        self._live_timer = QTimer(self)
+        self._live_timer.setSingleShot(True)
+        self._live_timer.setInterval(LIVE_REDRAW_MS)
+        self._live_timer.timeout.connect(lambda: self._render(stick_bottom=True))
 
         # Actions
         self.export_md_btn = QPushButton("Export notes.md")
@@ -187,12 +196,14 @@ class MainWindow(QMainWindow):
         try:
             rec = store.load_record(store.class_dir(self.library_dir(), class_id))
         except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "Could not open class", str(e))
+            self._alert("Could not open class", str(e))
             return
-        self.show_record(rec)
+        self.show_record(rec, self.library_dir())
 
-    def show_record(self, rec: store.ClassRecord) -> None:
+    def show_record(self, rec: store.ClassRecord, library: Path | None = None) -> None:
         self.record = rec
+        if library is not None:
+            self.record_lib = Path(library)
         self.current_id = None
         n = len(rec.segments)
         self.header.setText(
@@ -214,14 +225,39 @@ class MainWindow(QMainWindow):
         return self.record.segments if self.record else []
 
     def _render(self, keep_scroll: bool = True, stick_bottom: bool = False) -> None:
+        """Rebuild the whole list (~70 ms for a long class): only when content changes."""
         sb = self.view.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 4
         pos = sb.value()
-        self.view.setHtml(render_segments_html(self._segments(), self.current_id, self._dark()))
+        segs = self._segments()
+        self.view.setHtml(render_segments_html(segs, None, self._dark()))
+        # Each segment is one table, in order: remember where each starts and ends.
+        frames = self.view.document().rootFrame().childFrames()
+        self._seg_ranges = {}
+        if len(frames) == len(segs):
+            self._seg_ranges = {s.id: (f.firstPosition(), f.lastPosition())
+                                for s, f in zip(segs, frames)}
+        self._apply_highlight()
         if stick_bottom and at_bottom:
             sb.setValue(sb.maximum())
         elif keep_scroll:
             sb.setValue(pos)
+
+    def _apply_highlight(self) -> None:
+        """Colour the playing segment with an overlay: no page rebuild (well under 1 ms)."""
+        rng = getattr(self, "_seg_ranges", {}).get(self.current_id)
+        if rng is None:
+            self.view.setExtraSelections([])
+            return
+        cur = QTextCursor(self.view.document())
+        cur.setPosition(rng[0])
+        cur.setPosition(rng[1], QTextCursor.KeepAnchor)
+        sel = QTextEdit.ExtraSelection()
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(DARK["hl"] if self._dark() else LIGHT["hl"]))
+        sel.format = fmt
+        sel.cursor = cur
+        self.view.setExtraSelections([sel])
 
     # ---------- links / playback ----------
     def _on_link(self, url: QUrl) -> None:
@@ -268,7 +304,7 @@ class MainWindow(QMainWindow):
         new_id = segs[idx].id if idx is not None else self.current_id
         if new_id != self.current_id:
             self.current_id = new_id
-            self._render()
+            self._apply_highlight()
             if self.follow.isChecked() and new_id is not None:
                 self.view.scrollToAnchor(f"seg-{new_id}")
 
@@ -279,9 +315,27 @@ class MainWindow(QMainWindow):
             return
         dlg = EditDialog(seg, self)
         if dlg.exec():
-            seg.text_edited = dlg.edited_text()
-            store.save_record(self.record, self.library_dir())
-            self._render()
+            self.apply_edit(seg_id, dlg.edited_text())
+
+    def apply_edit(self, seg_id: int, text: str | None) -> None:
+        seg = self._seg_by_id(seg_id)
+        if seg is None or self.record is None:
+            return
+        seg.text_edited = text
+        self._save_current()
+        self._render()
+
+    def _save_current(self) -> bool:
+        """Save the open class into the library it was opened from (not today's setting)."""
+        try:
+            store.save_record(self.record, self.record_lib or self.library_dir())
+            return True
+        except OSError as e:
+            self._alert("Could not save", str(e))
+            return False
+
+    def _alert(self, title: str, message: str) -> None:
+        QMessageBox.warning(self, title, message)
 
     def locate_audio(self) -> None:
         if self.record is None:
@@ -289,7 +343,7 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getOpenFileName(self, "Locate the class recording", "", AUDIO_FILTER)
         if f:
             self.record.audio_path = str(Path(f).resolve())
-            store.save_record(self.record, self.library_dir())
+            self._save_current()
             self.show_record(self.record)
 
     # ---------- processing ----------
@@ -316,6 +370,7 @@ class MainWindow(QMainWindow):
     def _start(self, path: str, day: str, title: str, class_id: str | None) -> None:
         self.player.stop()
         self.record = None
+        self._reprocess_id = class_id
         self.live_segments = []
         self.current_id = None
         self.header.setText(f"<h2 style='margin:0'>{_esc(title)}</h2>"
@@ -336,7 +391,8 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self._on_progress)
         self.worker.segment.connect(self._on_segment)
         self.worker.done.connect(self._on_done)
-        self.worker.cancelled_run.connect(lambda: self._finish("Cancelled. Nothing was saved."))
+        self.worker.cancelled_run.connect(
+            lambda: self._finish("Cancelled. Nothing was saved.", self._reprocess_id))
         self.worker.failed.connect(self._on_failed)
         self.worker.start()
 
@@ -345,33 +401,44 @@ class MainWindow(QMainWindow):
         self.proc_bar.setValue(int(frac * 1000))
 
     def _on_segment(self, seg: store.Segment) -> None:
+        # Segments arrive in bursts; redraw at most every LIVE_REDRAW_MS, not per segment.
         self.live_segments.append(seg)
-        self._render(stick_bottom=True)
+        if not self._live_timer.isActive():
+            self._live_timer.start()
 
     def _on_done(self, rec: store.ClassRecord) -> None:
         self._finish(None)
         self.refresh_library(select_id=rec.class_id)
 
     def _on_failed(self, msg: str) -> None:
-        self._finish(None)
-        QMessageBox.critical(self, "Processing failed", msg)
+        self._finish("Processing failed.", self._reprocess_id)
+        self._alert("Processing failed", msg)
 
-    def _finish(self, message: str | None) -> None:
+    def _finish(self, message: str | None, reopen_id: str | None = None) -> None:
         if self.worker is not None:
             self.worker.wait()
             self.worker.deleteLater()
         self.worker = None
+        self._reprocess_id = None
+        self._live_timer.stop()
         self.proc_panel.hide()
         self.new_btn.setEnabled(True)
         self.settings_btn.setEnabled(True)
         self.library.setEnabled(True)
-        if message:
+        # Clear the selection so clicking the previously selected class opens it again.
+        self.library.blockSignals(True)
+        self.library.setCurrentRow(-1)
+        self.library.blockSignals(False)
+        if reopen_id:  # a re-process that didn't finish: the class is unchanged, show it again
+            self.refresh_library(select_id=reopen_id)
+        if self.record is None and message:
             self._show_welcome()
             self.header.setText(f"<h2>{_esc(message)}</h2>")
 
     def cancel_processing(self) -> None:
         if self.worker is not None:
             self.worker.cancel()
+            models.kill_active()  # a first-time model conversion stops at once
             self.cancel_btn.setEnabled(False)
             self.proc_status.setText("Cancelling after the current phrase…")
 
@@ -379,9 +446,17 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
+            old_lib = self.library_dir()
             dlg.apply(self.settings)
             if self.persist:
                 self.settings.save()
+            if self.library_dir() != old_lib and self.record is not None:
+                # The open class belongs to the old library: close it rather than mix the two.
+                self.player.stop()
+                self.record, self.record_lib = None, None
+                self._set_record_actions(False)
+                self.missing_banner.hide()
+                self._show_welcome()
             self.refresh_library()
 
     def export(self, kind: str) -> None:
@@ -398,7 +473,7 @@ class MainWindow(QMainWindow):
 
     def open_folder(self) -> None:
         if self.record is not None:
-            folder = store.class_dir(self.library_dir(), self.record.class_id)
+            folder = store.class_dir(self.record_lib or self.library_dir(), self.record.class_id)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def closeEvent(self, event) -> None:
@@ -408,7 +483,12 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.worker.cancel()
-            self.worker.wait(30000)
+            models.kill_active()
+            if not self.worker.wait(30000):
+                # Stuck in a download or a GPU call that can't be interrupted. Nothing is saved
+                # for a cancelled run, so leave right away instead of crashing on exit.
+                self.player.stop()
+                os._exit(0)
         self.player.stop()
         event.accept()
 

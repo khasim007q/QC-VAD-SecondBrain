@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
+import tempfile
+import time
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
 SEGMENTS_FILE = "segments.json"
+RETRIES = 10  # OneDrive / antivirus often hold a just-written file for a moment
+RETRY_DELAY_S = 0.3
+
+
+class SaveError(OSError):
+    """segments.json could not be written; the class was saved under another name."""
 LANG_LABEL = {"ur": "Urdu", "en": "English", "ar": "Recitation"}
 
 
@@ -74,9 +83,22 @@ def load_record(folder: Path) -> ClassRecord:
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, "utf-8")
-    os.replace(tmp, path)
+    """Write to a unique temp file, then swap it in, retrying while the target is locked."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        for attempt in range(RETRIES):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == RETRIES - 1:
+                    raise
+                time.sleep(RETRY_DELAY_S)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def save_record(rec: ClassRecord, library: Path, backup: bool = False) -> Path:
@@ -96,9 +118,22 @@ def save_record(rec: ClassRecord, library: Path, backup: bool = False) -> Path:
             dest = folder / f"segments.{stamp}-{n}.json"
             n += 1
         shutil.copy2(seg_path, dest)
-    _write_atomic(seg_path, json.dumps(asdict(rec), ensure_ascii=False, indent=2))
-    _write_atomic(folder / "notes.md", render_notes_md(rec))
-    _write_atomic(folder / f"{rec.class_id}.srt", render_srt(rec))
+    data = json.dumps(asdict(rec), ensure_ascii=False, indent=2)
+    try:
+        _write_atomic(seg_path, data)
+    except OSError as e:
+        # Never lose a run: keep it under a name nothing else has open.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        rescue = folder / f"segments.recovered-{stamp}.json"
+        rescue.write_text(data, "utf-8")
+        raise SaveError(f"Could not write {seg_path} ({e}). The notes were saved as {rescue.name} in "
+                        "the class folder: close whatever has segments.json open, then rename it.") from e
+    # notes.md and .srt are rebuilt from segments.json on every save, so a locked one isn't fatal.
+    for name, text in (("notes.md", render_notes_md(rec)), (f"{rec.class_id}.srt", render_srt(rec))):
+        try:
+            _write_atomic(folder / name, text)
+        except OSError as e:
+            print(f"warning: could not update {folder / name}: {e}", file=sys.stderr)
     return folder
 
 
@@ -113,7 +148,16 @@ def list_library(library: Path) -> list[ClassRecord]:
                 recs.append(load_record(d))
             except (OSError, ValueError, TypeError, KeyError):
                 continue
-    return sorted(recs, key=lambda r: (r.date, r.class_id), reverse=True)
+    return sorted(recs, key=lambda r: (r.date, *_id_key(r.class_id)), reverse=True)
+
+
+def _id_key(class_id: str) -> tuple[str, int]:
+    """'2026-11-18' -> ('2026-11-18', 1), '2026-11-18-10' -> ('2026-11-18', 10),
+    so the 10th class of a day sorts after the 2nd."""
+    head, _, tail = class_id.rpartition("-")
+    if len(class_id) > 10 and head and tail.isdigit():
+        return head, int(tail)
+    return class_id, 1
 
 
 def fmt_clock(seconds: float) -> str:
@@ -152,8 +196,9 @@ def render_notes_md(rec: ClassRecord) -> str:
 def render_srt(rec: ClassRecord) -> str:
     blocks = []
     for seg in rec.segments:
-        text = display_text(seg)
-        if seg.lang == "ar" or not text.strip():
+        # A blank line ends an SRT block, so a multi-line edit keeps only its non-empty lines.
+        text = "\n".join(ln.strip() for ln in display_text(seg).splitlines() if ln.strip())
+        if seg.lang == "ar" or not text:
             continue
         n = len(blocks) + 1
         blocks.append(f"{n}\n{_fmt_srt(seg.start)} --> {_fmt_srt(seg.end)}\n{text}\n")

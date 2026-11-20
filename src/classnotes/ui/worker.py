@@ -55,5 +55,8 @@ class ProcessWorker(QThread):
         except AudioError as e:
             self.failed.emit(str(e))
         except Exception as e:  # keep the app alive, show the cause
+            if self._cancel:  # e.g. the model conversion was stopped by Cancel
+                self.cancelled_run.emit()
+                return
             traceback.print_exc()
             self.failed.emit(f"{type(e).__name__}: {e}")

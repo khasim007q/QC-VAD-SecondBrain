@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
-_SENTENCE = re.compile(r"[^۔؟!?.]*[۔؟!?.]+|[^۔؟!?.]+$")
+_HARD_STOPS = "۔؟!?"
+# Words that end in "." without ending the sentence (lower-case, without the dot).
+_ABBREVIATIONS = {"dr", "mr", "mrs", "ms", "prof", "st", "sr", "jr", "vs", "etc", "no", "sh"}
 _CLAUSE = re.compile(r"[^،,]*[،,]+|[^،,]+$")
 
 
@@ -38,6 +41,34 @@ def _fit(piece: str, max_chars: int) -> list[str]:
     return _pack(words, max_chars)
 
 
+def _sentences(text: str) -> list[str]:
+    """Cut after ۔ ؟ ! ? always, and after "." only where it ends a sentence: not inside
+    3.5 or www.site.com (no space follows), not after Dr. / e.g. / single initials."""
+    out: list[str] = []
+    start = i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch not in _HARD_STOPS and ch != ".":
+            i += 1
+            continue
+        end = i + 1
+        while end < n and (text[end] in _HARD_STOPS or text[end] == "."):
+            end += 1
+        if not any(c in _HARD_STOPS for c in text[i:end]):  # only dots
+            words = text[start:i].split()
+            word = words[-1] if words else ""
+            next_ch = text[end] if end < n else " "
+            if (not next_ch.isspace() or "." in word or word.lower() in _ABBREVIATIONS
+                    or (len(word) == 1 and word.isalpha())):
+                i = end
+                continue
+        out.append(text[start:end])
+        start = i = end
+    out.append(text[start:])
+    return out
+
+
 def split_sentences(texts: list[str], max_chars: int = 300) -> list[str]:
     """Split Whisper segment texts into sentences small enough for the translator.
 
@@ -46,7 +77,7 @@ def split_sentences(texts: list[str], max_chars: int = 300) -> list[str]:
     """
     out: list[str] = []
     for text in texts:
-        for m in _SENTENCE.findall(text):
+        for m in _sentences(text):
             piece = m.strip()
             if piece and _has_words(piece):
                 out.extend(_fit(piece, max_chars))
@@ -61,9 +92,11 @@ DEFAULT_TERMS = """\
 # Honorifics NLLB turns into "the Prophet"
 حضرت = Hazrat
 # The ﷺ symbol makes NLLB drop words ("the Messenger's house" -> "the House of Allah")
+رسول اللہ صلی اللہ علیہ وآلہ وسلم = Rasulullah (SAW)
 رسول اللہ صلی اللہ علیہ وسلم = Rasulullah (SAW)
 رسول اللہ ﷺ = Rasulullah (SAW)
 رسول اللہ = Rasulullah (SAW)
+صلی اللہ علیہ وآلہ وسلم = (SAW)
 صلی اللہ علیہ وسلم = (SAW)
 ﷺ = (SAW)
 # Whisper mis-spellings -> correct word
@@ -85,8 +118,8 @@ DEFAULT_TERMS = """\
 ظہر = Zuhr
 """
 
-_NOT_WORD_BEFORE = r"(?<!\w)"
-_NOT_WORD_AFTER = r"(?!\w)"
+# Arabic-script vowel marks (zer, zabar, ...) count as part of the word they follow.
+_MARKS = "[ً-ٰٟۖ-ۭ]*"
 
 
 def parse_terms(text: str) -> list[tuple[str, str]]:
@@ -102,10 +135,41 @@ def parse_terms(text: str) -> list[tuple[str, str]]:
     return sorted(terms, key=lambda t: len(t[0]), reverse=True)
 
 
-def apply_terms(sentence: str, terms: list[tuple[str, str]]) -> str:
-    for src, dst in terms:
-        sentence = re.sub(_NOT_WORD_BEFORE + re.escape(src) + _NOT_WORD_AFTER, dst, sentence)
+# Mishearings that are only safe to fix when the segment is about a given topic:
+# (heard word, real word, words that show the topic). Whisper turbo writes ظہر (the Zuhr
+# prayer) as زہر ("poison"); in a passage about prayer it is always Zuhr.
+_PRAYER_CUES = ("نماز", "رکعت", "رکعتیں", "رکاتیں", "رکاتوں", "رکعتوں", "جمعہ", "جمعے",
+                "فجر", "عصر", "مغرب", "عشاء", "عشا", "اذان", "فرض", "سنت", "قضا", "وتر")
+CONTEXT_FIXES = [("زہر", "ظہر", _PRAYER_CUES)]
+
+
+def _has_word(text: str, word: str) -> bool:
+    return re.search(r"(?<!\w)" + re.escape(word) + _MARKS + r"(?!\w)", text) is not None
+
+
+def apply_context_fixes(sentence: str, segment_text: str) -> str:
+    """Fix context-dependent mishearings in `sentence` using the whole segment as context."""
+    for heard, real, cues in CONTEXT_FIXES:
+        if _has_word(sentence, heard) and any(_has_word(segment_text, c) for c in cues):
+            sentence = re.sub(r"(?<!\w)" + re.escape(heard) + r"(?!\w)", real, sentence)
     return sentence
+
+
+@lru_cache(maxsize=8)
+def _terms_pattern(sources: tuple[str, ...]) -> re.Pattern:
+    alts = "|".join(re.escape(s) for s in sources)  # longest first, so phrases win
+    return re.compile(r"(?<!\w)(" + alts + ")" + _MARKS + r"(?!\w)")
+
+
+def apply_terms(sentence: str, terms: list[tuple[str, str]]) -> str:
+    """Replace whole words/phrases in one pass (a replacement is never replaced again)."""
+    if not terms:
+        return sentence
+    table: dict[str, str] = {}
+    for src, dst in terms:
+        table.setdefault(src, dst)
+    pattern = _terms_pattern(tuple(src for src, _ in terms))
+    return pattern.sub(lambda m: table[m.group(1)], sentence)
 
 
 class Translator(Protocol):
@@ -119,7 +183,7 @@ class NllbTranslator:
     SRC = "urd_Arab"
     TGT = "eng_Latn"
 
-    def __init__(self, model_dir: Path, device: str = "cuda", batch_size: int = 16):
+    def __init__(self, model_dir: Path, device: str = "cuda", batch_size: int = 64):
         import ctranslate2
         import sentencepiece as spm
 
@@ -129,21 +193,22 @@ class NllbTranslator:
         self._batch = batch_size
 
     def translate(self, sentences: list[str]) -> list[str]:
+        if not sentences:
+            return []
+        # NLLB input format: <src_lang> pieces... </s>; CTranslate2 maps pieces to ids itself.
+        src = [[self.SRC] + self._sp.encode(s, out_type=str) + ["</s>"] for s in sentences]
+        results = self._tr.translate_batch(
+            src,
+            target_prefix=[[self.TGT]] * len(src),
+            max_batch_size=self._batch,  # CTranslate2 sorts by length and batches internally
+            beam_size=4,
+            max_decoding_length=256,
+            # Stops degenerate loops ("no, no, no, ...", "the Companions of the Companions...")
+            no_repeat_ngram_size=4,
+            repetition_penalty=1.1,
+        )
         out: list[str] = []
-        for i in range(0, len(sentences), self._batch):
-            batch = sentences[i:i + self._batch]
-            # NLLB input format: <src_lang> pieces... </s>; CTranslate2 maps pieces to ids itself.
-            src = [[self.SRC] + self._sp.encode(s, out_type=str) + ["</s>"] for s in batch]
-            results = self._tr.translate_batch(
-                src,
-                target_prefix=[[self.TGT]] * len(batch),
-                beam_size=4,
-                max_decoding_length=256,
-                # Stops degenerate loops ("no, no, no, ...", "the Companions of the Companions...")
-                no_repeat_ngram_size=4,
-                repetition_penalty=1.1,
-            )
-            for r in results:
-                tokens = [t for t in r.hypotheses[0] if t not in (self.TGT, "</s>")]
-                out.append(self._sp.decode(tokens).strip())
+        for r in results:
+            tokens = [t for t in r.hypotheses[0] if t not in (self.TGT, "</s>")]
+            out.append(self._sp.decode(tokens).strip())
         return out

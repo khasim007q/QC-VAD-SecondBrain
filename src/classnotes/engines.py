@@ -9,7 +9,7 @@ from . import models
 from .settings import Settings
 
 _lock = threading.Lock()
-_cache: dict[str, tuple] = {}
+_cache: dict[tuple[str, str], tuple] = {}
 
 
 def get_engines(settings: Settings, progress: Callable[[str], None] | None = None):
@@ -21,15 +21,17 @@ def get_engines(settings: Settings, progress: Callable[[str], None] | None = Non
     from .translate import NllbTranslator
 
     device = settings.resolved_device()
+    key = (device, settings.whisper_model)
     with _lock:
-        if device not in _cache:
-            models.ensure_whisper(progress)
+        if key not in _cache:
+            _cache.clear()  # free the GPU memory of a previous device/model first
+            models.ensure_whisper(progress, settings.whisper_model)
             models.ensure_nllb(progress)
             if progress:
                 progress(f"Loading models on {device.upper()}...")
-            asr = WhisperAsr(models.whisper_dir(), device, settings)
+            asr = WhisperAsr(models.whisper_dir(settings.whisper_model), device, settings)
             tr = NllbTranslator(models.nllb_dir(), device)
-            _cache[device] = (asr, tr)
-        asr, tr = _cache[device]
+            _cache[key] = (asr, tr)
+        asr, tr = _cache[key]
         asr.settings = settings  # pick up changed VAD settings
         return asr, tr

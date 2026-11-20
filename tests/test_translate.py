@@ -60,3 +60,44 @@ def test_default_terms_rasulullah_phrase_wins_over_symbol():
     terms = parse_terms(DEFAULT_TERMS)
     out = apply_terms("رسول اللہ ﷺ کے گھر کو گھیرا اور آپ ﷺ نکلے", terms)
     assert out == "Rasulullah (SAW) کے گھر کو گھیرا اور آپ (SAW) نکلے"
+
+
+def test_split_keeps_decimals_abbreviations_and_urls_together():
+    text = "Dr. Israr said 3.5 percent, e.g. at www.example.com today. Next one"
+    assert split_sentences([text]) == [
+        "Dr. Israr said 3.5 percent, e.g. at www.example.com today.", "Next one"]
+
+
+def test_split_still_splits_urdu_and_normal_sentences():
+    assert split_sentences(["یہ پہلا ہے۔ یہ دوسرا ہے؟ End. Start"]) == [
+        "یہ پہلا ہے۔", "یہ دوسرا ہے؟", "End.", "Start"]
+
+
+def test_term_absorbs_a_following_vowel_mark():
+    terms = parse_terms("حضرت = Hazrat")
+    assert apply_terms("حضرتِ ابوبکر", terms) == "Hazrat ابوبکر"
+
+
+def test_replacements_do_not_chain():
+    terms = parse_terms("خریب = قریب\nقریب = near")
+    assert apply_terms("خریب", terms) == "قریب"
+    assert apply_terms("قریب", terms) == "near"
+
+
+def test_default_terms_cover_the_aalihi_salutation():
+    terms = parse_terms(DEFAULT_TERMS)
+    assert apply_terms("رسول اللہ صلی اللہ علیہ وآلہ وسلم نے", terms) == "Rasulullah (SAW) نے"
+
+
+def test_zuhr_misheard_as_poison_is_fixed_when_the_segment_is_about_prayer():
+    from classnotes.translate import apply_context_fixes
+
+    seg = "جمعے میں دو ہی رکاتیں کیوں ہیں؟ زہر میں تو چار ہوتی ہیں"
+    assert apply_context_fixes("زہر میں تو چار ہوتی ہیں", seg) == "ظہر میں تو چار ہوتی ہیں"
+
+
+def test_poison_stays_poison_without_prayer_context():
+    from classnotes.translate import apply_context_fixes
+
+    seg = "سانپ کا زہر بہت خطرناک تھا اور زہریلے جانور"
+    assert apply_context_fixes(seg, seg) == seg

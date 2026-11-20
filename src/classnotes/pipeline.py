@@ -1,7 +1,10 @@
-"""VAD -> language per span -> merge -> transcribe (en/ar) or transcribe + translate (ur)."""
+"""VAD -> merge close spans into blocks (<= ~25 s) -> in batches of blocks: one Whisper
+encoder pass gives both the language and the transcript -> Urdu sentences translated with
+NLLB, one call per batch. English is kept verbatim, Arabic recitation is marked."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 import numpy as np
@@ -10,9 +13,30 @@ from .asr import Asr
 from .segment import SR, LangSpan, bucket_probs, choose_lang, merge_spans
 from .settings import Settings
 from .store import Segment
-from .translate import Translator, apply_terms, parse_terms, split_sentences
+from .translate import Translator, apply_context_fixes, apply_terms, parse_terms, split_sentences
 
 ProgressFn = Callable[[str, float], None]
+
+MAX_BLOCK_S = 29.0  # Whisper sees 30 s at a time; anything longer would be cut off
+URDU_SCRIPT_LIMIT = 10  # more Urdu letters than this in an "English" block -> it was Urdu
+
+
+def _blocks(spans: list[tuple[int, int]], settings: Settings) -> list[LangSpan]:
+    """Merge VAD spans with short gaps (language-agnostic), never longer than MAX_BLOCK_S."""
+    raw = [LangSpan(a, b, "", 1.0) for a, b in spans]
+    merged = merge_spans(raw, max_gap_s=settings.merge_gap_s,
+                         max_len_s=min(settings.merge_max_s, MAX_BLOCK_S))
+    limit = int(MAX_BLOCK_S * SR)
+    out: list[LangSpan] = []
+    for b in merged:  # a single VAD span can still be too long: cut it evenly
+        n = -(-(b.end - b.start) // limit)
+        step = -(-(b.end - b.start) // n)
+        out += [replace(b, start=a, end=min(a + step, b.end)) for a in range(b.start, b.end, step)]
+    return out
+
+
+def _urdu_letters(texts: list[str]) -> int:
+    return sum("؀" <= ch <= "ۿ" for t in texts for ch in t)
 
 
 def run_pipeline(
@@ -31,52 +55,64 @@ def run_pipeline(
         on_progress("Done", 1.0)
         return []
 
-    lang_spans: list[LangSpan] = []
-    for i, (a, b) in enumerate(spans):
-        if cancelled():
-            return None
-        lang, conf = choose_lang(
-            bucket_probs(asr.lang_probs(audio[a:b])),
-            b - a,
-            min_conf=settings.min_conf,
-            min_dur_s=settings.min_dur_s,
-        )
-        lang_spans.append(LangSpan(a, b, lang, conf))
-        on_progress("Detecting language", (i + 1) / len(spans))
-
-    merged = merge_spans(lang_spans, max_gap_s=settings.merge_gap_s, max_len_s=settings.merge_max_s)
+    blocks = _blocks(spans, settings)
     terms = parse_terms(settings.terms)
-    total = sum(s.end - s.start for s in merged)
-    done = 0
-    segments: list[Segment] = []
-    on_progress("Transcribing", 0.0)
+    glossary = settings.glossary or None
+    prompts = {"ur": glossary, "en": glossary, "ar": None}
 
-    for span in merged:
+    def choose(probs, n_samples):
+        return choose_lang(bucket_probs(probs), n_samples,
+                           min_conf=settings.min_conf, min_dur_s=settings.min_dur_s)
+
+    segments: list[Segment] = []
+    bs = max(1, int(settings.batch_size))
+    on_progress("Transcribing", 0.0)
+    for j in range(0, len(blocks), bs):
         if cancelled():
             return None
-        prompt = None if span.lang == "ar" else (settings.glossary or None)
-        texts = [t.strip() for t in asr.transcribe(audio[span.start:span.end], span.lang, prompt)]
-        texts = [t for t in texts if t]
-        seg = _make_segment(len(segments), span, texts, translator, terms)
-        if seg is not None:
+        chunk = blocks[j:j + bs]
+        clips = [audio[b.start:b.end] for b in chunk]
+        heard = []
+        for b, clip, (lang, conf, texts) in zip(chunk, clips, asr.transcribe_batch(clips, prompts, choose)):
+            texts = [t.strip() for t in texts if t.strip()]
+            if lang == "en" and _urdu_letters(texts) > URDU_SCRIPT_LIMIT:
+                lang = "ur"  # mixed speech the detector called English, but it is Urdu
+                texts = [t.strip() for t in asr.transcribe(clip, "ur", prompts["ur"]) if t.strip()]
+            heard.append((replace(b, lang=lang, conf=conf), texts))
+        for seg in _make_segments(len(segments), heard, translator, terms):
             segments.append(seg)
             on_segment(seg)
-        done += span.end - span.start
-        on_progress("Transcribing", done / total)
+        on_progress("Transcribing", min(j + bs, len(blocks)) / len(blocks))
 
     return segments
 
 
-def _make_segment(idx: int, span: LangSpan, texts: list[str], translator: Translator,
-                  terms: list[tuple[str, str]] = ()) -> Segment | None:
+def _make_segments(first_id: int, heard: list[tuple[LangSpan, list[str]]],
+                   translator: Translator, terms) -> list[Segment]:
+    """Build segments for one batch; all its Urdu sentences go to the translator in one call."""
+    sentences = {i: split_sentences(texts) for i, (span, texts) in enumerate(heard)
+                 if span.lang == "ur" and texts}
+    flat = [apply_terms(apply_context_fixes(s, " ".join(heard[i][1])), terms)
+            for i in sentences for s in sentences[i]]
+    english = iter(translator.translate(flat) if flat else [])
+    out: list[Segment] = []
+    for i, (span, texts) in enumerate(heard):
+        translated = [next(english) for _ in sentences.get(i, [])]
+        seg = _make_segment(first_id + len(out), span, texts, translated, sentences.get(i))
+        if seg is not None:
+            out.append(seg)
+    return out
+
+
+def _make_segment(idx: int, span: LangSpan, texts: list[str], translated: list[str],
+                  sentences: list[str] | None) -> Segment | None:
     if not texts:
         return None
     if span.lang == "ur":
-        sentences = split_sentences(texts)
         if not sentences:
             return None
         source = " ".join(sentences)  # stored exactly as heard
-        text = " ".join(translator.translate([apply_terms(s, terms) for s in sentences]))
+        text = " ".join(translated)
     elif span.lang == "en":
         source = text = " ".join(texts)
     else:  # Arabic recitation: keep as heard, never translate
@@ -92,7 +128,7 @@ def _make_segment(idx: int, span: LangSpan, texts: list[str], translator: Transl
     )
 
 
-MODEL_NAMES = {"asr": "whisper-large-v3", "mt": "nllb-200-distilled-600M-ct2-int8"}
+MT_MODEL_NAME = "nllb-200-distilled-600M-ct2-int8"
 
 
 def process_recording(
@@ -129,7 +165,7 @@ def process_recording(
         date=date,
         audio_path=str(audio_path),
         duration_s=round(len(audio) / SR, 2),
-        models=dict(MODEL_NAMES),
+        models={"asr": f"whisper-{settings.whisper_model}", "mt": MT_MODEL_NAME},
         created_at=datetime.now().isoformat(timespec="seconds"),
         segments=segments,
     )

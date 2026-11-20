@@ -18,19 +18,30 @@ class FakeAsr:
     def __init__(self, spans):
         self.spans = spans  # list of (start_s, end_s, lang, [texts])
         self.prompts = []
+        self.batches = []
+        self.redone = []
 
     def speech_spans(self, audio):
         return [(int(a * SR), int(b * SR)) for a, b, _, _ in self.spans]
 
-    def lang_probs(self, clip):
-        return PROBS[self.spans[int(clip[0])][2]]
+    def _texts(self, clip):
+        idx = sorted({int(v) for v in np.unique(clip) if v >= 0})
+        return [t for i in idx for t in self.spans[i][3]]
+
+    def transcribe_batch(self, clips, prompts, choose):
+        # language comes from the block's first scripted span, like detection on its start
+        self.batches.append(len(clips))
+        out = []
+        for clip in clips:
+            lang, conf = choose(PROBS[self.spans[int(clip[0])][2]], len(clip))
+            self.prompts.append((lang, prompts[lang]))
+            out.append((lang, conf, self._texts(clip)))
+        return out
 
     def transcribe(self, clip, lang, prompt):
+        self.redone.append(lang)
         self.prompts.append((lang, prompt))
-        # merged spans start with the first span's marker; return all covered texts
-        first = int(clip[0])
-        last = int(clip[-1])
-        return [t for i in range(first, last + 1) for t in self.spans[i][3]]
+        return self._texts(clip)
 
 
 class FakeTranslator:
@@ -38,6 +49,7 @@ class FakeTranslator:
         self.seen = []
 
     def translate(self, sentences):
+        self.calls = getattr(self, "calls", 0) + 1
         self.seen.extend(sentences)
         return ["EN:" + s for s in sentences]
 
@@ -99,7 +111,7 @@ def test_pipeline_skips_empty_text():
 
 def test_pipeline_cancel():
     spans = [(0, 5, "en", ["One."]), (10, 15, "en", ["Two."]), (20, 25, "en", ["Three."])]
-    result, got, *_ = run(spans, cancel_after=1)
+    result, got, *_ = run(spans, cancel_after=1, settings=Settings(batch_size=1))
     assert result is None
     assert len(got) == 1
 
@@ -134,7 +146,7 @@ def test_process_recording_saves_record(tmp_path):
     rec = _process(tmp_path, [(0, 5, "en", ["Hello."])])
     assert rec.class_id == "2026-11-18"
     assert rec.duration_s == 60.0
-    assert rec.models["asr"] == "whisper-large-v3"
+    assert rec.models["asr"] == "whisper-large-v3-turbo"
     loaded = store.load_record(tmp_path / "2026-11-18")
     assert loaded.segments[0].text == "Hello."
 
@@ -157,3 +169,47 @@ def test_pipeline_applies_terms_before_translation_but_keeps_source():
     result, _, _, _, tr = run(spans, settings=Settings(terms="حضرت = Hazrat"))
     assert tr.seen == ["Hazrat عمر آئے۔"]
     assert result[0].source == "حضرت عمر آئے۔"
+
+
+def test_pipeline_batches_blocks_and_translates_once_per_batch():
+    spans = [(0, 5, "ur", ["ایک۔"]), (10, 15, "ur", ["دو۔"]), (20, 25, "ur", ["تین۔"])]
+    result, _, _, asr, tr = run(spans, settings=Settings(batch_size=2))
+    assert asr.batches == [2, 1]
+    assert tr.calls == 2
+    assert [s.text for s in result] == ["EN:ایک۔", "EN:دو۔", "EN:تین۔"]
+
+
+def test_pipeline_merges_close_spans_before_choosing_language():
+    spans = [(0, 5, "ur", ["پہلا۔"]), (5.5, 9, "en", ["Then English."])]
+    result, *_ = run(spans)
+    assert len(result) == 1 and result[0].lang == "ur"
+    assert (result[0].start, result[0].end) == (0.0, 9.0)
+
+
+def test_english_block_written_in_urdu_script_is_redone_as_urdu():
+    spans = [(0, 5, "en", ["یہ دراصل اردو میں بولا گیا جملہ ہے۔"])]
+    result, _, _, asr, tr = run(spans)
+    assert asr.redone == ["ur"]
+    assert result[0].lang == "ur"
+    assert tr.seen == ["یہ دراصل اردو میں بولا گیا جملہ ہے۔"]
+
+
+def test_english_with_a_few_urdu_words_stays_english():
+    spans = [(0, 5, "en", ["So this is called ہجرت in Urdu."])]
+    result, _, _, asr, _ = run(spans)
+    assert asr.redone == [] and result[0].lang == "en"
+
+
+def test_overlong_speech_is_cut_into_whisper_sized_blocks():
+    spans = [(0, 70, "en", ["Long talk."])]
+    result, *_ = run(spans, settings=Settings(max_speech_s=90, merge_max_s=90))
+    assert len(result) == 3
+    assert all(s.end - s.start <= 30 for s in result)
+    assert (result[0].start, result[-1].end) == (0.0, 70.0)
+
+
+def test_pipeline_fixes_zuhr_in_prayer_context_before_translation():
+    spans = [(0, 5, "ur", ["جمعہ آپ اکیلے پڑھیں گے تو زہر میں کاؤنٹ ہو جائے گا۔"])]
+    result, _, _, _, tr = run(spans)
+    assert tr.seen == ["جمعہ آپ اکیلے پڑھیں گے تو Zuhr میں کاؤنٹ ہو جائے گا۔"]
+    assert "زہر" in result[0].source  # stored Urdu stays as heard

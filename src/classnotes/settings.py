@@ -31,6 +31,8 @@ class Settings:
     merge_gap_s: float = 1.0
     merge_max_s: float = 25.0
     device: str = "auto"  # "auto" | "cuda" | "cpu"
+    whisper_model: str = "large-v3-turbo"  # or "large-v3": ~2-3x slower, the original model
+    batch_size: int = 8  # blocks per GPU pass (halved automatically if the GPU runs out of memory)
     library_dir: str = field(default_factory=_default_library)
 
     @staticmethod

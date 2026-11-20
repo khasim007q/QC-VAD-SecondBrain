@@ -18,13 +18,19 @@ without an LLM, without uploading anything.
 
 ```
 recording ─► Silero VAD (speech spans)
-          ─► Whisper large-v3 language ID per span (Urdu / English / Arabic)
-          ─► merge neighbouring same-language spans
-          ─► English: Whisper transcribe (verbatim)
-             Urdu:    Whisper transcribe ─► split sentences ─► NLLB urd_Arab→eng_Latn
-             Arabic:  Whisper transcribe, marked as recitation, not translated
+          ─► merge spans with short gaps into blocks (≤ 25 s)
+          ─► 8 blocks at a time on the GPU, one Whisper large-v3-turbo encoder pass each:
+             language (Urdu / English / Arabic) and transcript from the same pass
+          ─► English: kept verbatim
+             Urdu:    split sentences ─► NLLB urd_Arab→eng_Latn (one batch per 8 blocks)
+             Arabic:  marked as recitation, not translated
           ─► segments.json · notes.md · .srt
 ```
+
+A 100-minute class takes about 3–4 minutes on an RTX 5060 (it was ~16 minutes before
+batching and turbo). Blocks whose output looks repetitive or unsure are redone with the slower
+careful decoder, and a block detected as English but written in Urdu script is redone as Urdu.
+**Glossary & settings → Speech model** switches back to Whisper large-v3 (about 2–3x slower).
 
 Design: [docs/design.md](docs/design.md) · Plan: [docs/superpowers/plans](docs/superpowers/plans)
 
@@ -46,7 +52,7 @@ uv sync
 uv run python -m classnotes.models
 ```
 
-The second command downloads Whisper large-v3 (~3 GB) and NLLB-200 (~2.5 GB), converts
+The second command downloads Whisper large-v3-turbo (~1.6 GB) and NLLB-200 (~2.5 GB), converts
 NLLB to CTranslate2 int8, and stores both in `%LOCALAPPDATA%\ClassNotes\models`. (The app
 also does this automatically the first time you process a class.) The conversion runs once in
 a throwaway uv environment, so PyTorch never becomes part of the app itself.
@@ -104,7 +110,8 @@ Re-processing a class keeps the previous file as `segments.<timestamp>.json`.
 ## Limits
 
 - Machine translation is readable, not polished. Have someone fluent spot-check early classes.
-- A sentence that switches language mid-way is treated as Urdu.
+- A sentence that switches language mid-way is treated as Urdu. Short English remarks inside
+  Urdu speech stay in that Urdu segment (in English letters) rather than getting their own row.
 - Recitation is flagged, but Whisper's Arabic text is not the canonical ayah text.
 - NLLB-200 is licensed CC-BY-NC 4.0 (non-commercial). For commercial use, swap in IndicTrans2 (MIT).
 

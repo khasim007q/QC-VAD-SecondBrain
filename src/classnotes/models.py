@@ -8,12 +8,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable
 
 from . import paths
 
-WHISPER_REPO = "large-v3"  # resolved by faster-whisper to Systran/faster-whisper-large-v3
+# Names faster-whisper resolves to Hugging Face repos, with their download size.
+WHISPER_MODELS = {"large-v3-turbo": "~1.6 GB", "large-v3": "~3 GB"}
+DEFAULT_WHISPER = "large-v3-turbo"
 NLLB_REPO = "facebook/nllb-200-distilled-600M"
 NLLB_TOKENIZER_FILES = [
     "sentencepiece.bpe.model",
@@ -25,8 +28,10 @@ NLLB_TOKENIZER_FILES = [
 Progress = Callable[[str], None] | None
 
 
-def whisper_dir() -> Path:
-    return paths.models_dir() / "whisper-large-v3"
+def whisper_dir(name: str = DEFAULT_WHISPER) -> Path:
+    if name not in WHISPER_MODELS:
+        raise ValueError(f"unknown Whisper model {name!r}")
+    return paths.models_dir() / f"whisper-{name}"
 
 
 def nllb_dir() -> Path:
@@ -40,8 +45,10 @@ def _say(progress: Progress, msg: str) -> None:
         print(msg, flush=True)
 
 
-def whisper_ready() -> bool:
-    return (whisper_dir() / "model.bin").is_file()
+def whisper_ready(name: str = DEFAULT_WHISPER) -> bool:
+    d = whisper_dir(name)
+    return all((d / f).is_file() for f in ("model.bin", "config.json", "tokenizer.json",
+                                            "preprocessor_config.json"))
 
 
 def nllb_ready() -> bool:
@@ -49,19 +56,19 @@ def nllb_ready() -> bool:
     return (d / "model.bin").is_file() and (d / "sentencepiece.bpe.model").is_file()
 
 
-def models_ready() -> bool:
-    return whisper_ready() and nllb_ready()
+def models_ready(name: str = DEFAULT_WHISPER) -> bool:
+    return whisper_ready(name) and nllb_ready()
 
 
-def ensure_whisper(progress: Progress = None) -> Path:
-    out = whisper_dir()
-    if whisper_ready():
+def ensure_whisper(progress: Progress = None, name: str = DEFAULT_WHISPER) -> Path:
+    out = whisper_dir(name)
+    if whisper_ready(name):
         return out
     from faster_whisper.utils import download_model
 
-    _say(progress, "Downloading Whisper large-v3 (~3 GB, one time)...")
-    download_model(WHISPER_REPO, output_dir=str(out))
-    _say(progress, "Whisper large-v3 ready.")
+    _say(progress, f"Downloading Whisper {name} ({WHISPER_MODELS[name]}, one time)...")
+    download_model(name, output_dir=str(out))
+    _say(progress, f"Whisper {name} ready.")
     return out
 
 
@@ -91,6 +98,40 @@ def convert_command(repo: str, out: Path) -> list[str]:
     return cmd + ["python", "-c", _CONVERT_SCRIPT, repo, str(out), ",".join(NLLB_TOKENIZER_FILES)]
 
 
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_active: list[subprocess.Popen] = []
+_active_lock = threading.Lock()
+
+
+def run_tracked(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Run a helper process that kill_active() can stop (e.g. when the app closes)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
+    with _active_lock:
+        _active.append(proc)
+    try:
+        out, err = proc.communicate()
+    finally:
+        with _active_lock:
+            _active.remove(proc)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def kill_active() -> None:
+    """Stop helper processes, including their children (uv starts python as a child)."""
+    with _active_lock:
+        procs = list(_active)
+    for p in procs:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                               capture_output=True, creationflags=_NO_WINDOW)
+            else:
+                p.kill()
+        except OSError:
+            pass
+
+
 def ensure_nllb(progress: Progress = None) -> Path:
     out = nllb_dir()
     if nllb_ready():
@@ -100,11 +141,7 @@ def ensure_nllb(progress: Progress = None) -> Path:
     tmp = out.with_name(out.name + ".tmp")
     if tmp.exists():
         shutil.rmtree(tmp)
-    proc = subprocess.run(
-        convert_command(NLLB_REPO, tmp),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    proc = run_tracked(convert_command(NLLB_REPO, tmp))
     if proc.returncode != 0 or not (tmp / "model.bin").is_file():
         tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-15:])
         raise RuntimeError(f"NLLB conversion failed:\n{tail}")
