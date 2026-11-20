@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Notes, draft C: focus</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Host+Grotesk:wght@400;500&family=JetBrains+Mono:wght@400;500&family=Noto+Nastaliq+Urdu:wght@400&family=Amiri:wght@400&display=swap" rel="stylesheet">
+<style>
+/* Deal: palette paper-grey-brass, type host, radius soft. Brass is kept for fills and marks;
+   it is too light for text on this ground, so filled controls carry an ink border and ink label. */
+:root{
+  --bg:#e8e8e3; --surface:#dcdcd6; --panel:#f3f3ef; --ink:#181715; --accent:#bfb21a;
+  --muted:#55534c; --line:rgba(24,23,21,.14); --line-strong:rgba(24,23,21,.3);
+  --r-lg:20px; --r-md:12px; --r-sm:8px;
+  --f-ui:"Host Grotesk",system-ui,sans-serif; --f-mono:"JetBrains Mono",ui-monospace,monospace;
+  --f-ur:"Noto Nastaliq Urdu","Urdu Typesetting",serif; --f-ar:"Amiri",serif;
+  --m-in:140ms; --m-press:90ms; --ease:cubic-bezier(.2,.8,.2,1);
+}
+*{box-sizing:border-box} html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--f-ui);overflow:hidden}
+button,input,textarea{font:inherit;color:inherit}
+.app{display:grid;grid-template-rows:64px 1fr 88px;height:100vh}
+
+.top{display:flex;align-items:center;gap:16px;padding:0 32px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;font-weight:500;font-size:19px;letter-spacing:-.02em}
+.brand img{width:26px;height:26px;border-radius:7px}
+.crumb{color:var(--muted);font-size:15px}
+.crumb b{color:var(--ink);font-weight:500}
+.top .grow{flex:1}
+.field{display:flex;align-items:center;gap:8px;height:44px;width:300px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--panel)}
+.field input{border:0;outline:0;background:transparent;flex:1;min-width:0;font-size:15px}
+.kbd{font:500 12px/1 var(--f-mono);color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+
+.btn{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px;border-radius:var(--r-sm);font-size:15px;font-weight:500;cursor:pointer;border:1px solid var(--line-strong);background:var(--panel);transition:transform var(--m-in) var(--ease),background var(--m-in) var(--ease),border-color var(--m-in) var(--ease)}
+.btn:hover{transform:translateY(-1px);border-color:var(--ink)}
+.btn:active{transform:translateY(1px) scale(.985);transition-duration:var(--m-press)}
+.btn--primary{background:var(--accent);border-color:var(--ink)}
+.btn--primary:hover{background:#a99d12}
+.btn:focus-visible,.icon:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.link{background:none;border:0;padding:0;cursor:pointer;font-size:15px;font-weight:500;text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:4px;transition:text-decoration-color var(--m-in) var(--ease)}
+.link:hover{text-decoration-color:var(--ink)}
+
+.stage{display:grid;grid-template-columns:1fr minmax(560px,860px) 1fr;min-height:0;overflow:hidden}
+.col{grid-column:2;display:flex;flex-direction:column;justify-content:safe center;gap:12px;padding:24px 0;min-height:0;overflow:auto}
+.ctx{display:grid;grid-template-columns:72px 1fr;gap:16px;padding:8px 16px;border-radius:var(--r-md);cursor:pointer;color:#5f5d55;transition:background var(--m-in) var(--ease),color var(--m-in) var(--ease)}
+.ctx:hover{background:var(--surface);color:var(--ink)}
+.ctx time,.now time{font:500 13px/1.8 var(--f-mono)}
+.ctx p{margin:0;font-size:16px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.now{display:grid;grid-template-columns:72px 1fr;gap:16px;padding:24px 16px;background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r-lg)}
+.now .en{margin:0;font-size:24px;line-height:1.45;letter-spacing:-.01em}
+.now .ur{margin:16px 0 0;font-family:var(--f-ur);font-size:24px;line-height:2.2;direction:rtl;text-align:right;color:#3d3b35}
+.now .acts{display:flex;gap:16px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.flag{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#6d4500}
+.flag::before{content:"";width:8px;height:8px;border-radius:50%;background:#b26b00}
+textarea{width:100%;min-height:120px;border:1px solid var(--ink);border-radius:var(--r-sm);background:#fff;padding:12px;font-size:20px;line-height:1.5;outline:0;resize:vertical}
+.quran{margin-top:16px;border-top:1px solid var(--line);padding-top:16px}
+.quran .ref{font-size:13px;font-weight:500;color:var(--muted)}
+.quran .ar{font-family:var(--f-ar);font-size:26px;line-height:1.9;direction:rtl;text-align:right;margin:4px 0}
+.quran p{margin:0;font-size:16px}
+
+.map{grid-column:3;justify-self:end;margin:24px 32px;width:56px;position:relative;border-left:1px solid var(--line-strong)}
+.map u{position:absolute;left:-5px;width:9px;height:2px;background:#b26b00}
+.map i{position:absolute;left:-7px;width:13px;height:13px;border-radius:50%;background:var(--accent);border:1px solid var(--ink)}
+.map span{position:absolute;left:12px;font:500 12px var(--f-mono);color:var(--muted)}
+.btn,.link{white-space:nowrap}
+.learn{grid-column:1;align-self:end;margin:24px 32px;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:16px;font-size:15px}
+.learn .ur{font-family:var(--f-ur);font-size:18px;line-height:2}
+.learn .acts{display:flex;gap:16px;align-items:center;margin-top:12px}
+
+.player{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 32px;border-top:1px solid var(--line);background:var(--panel)}
+.track{display:flex;align-items:center;gap:12px;font:500 13px var(--f-mono);color:var(--muted)}
+.bar{flex:1;height:6px;background:var(--surface);border-radius:3px;position:relative;max-width:360px}
+.bar i{position:absolute;inset:0 auto 0 0;width:44%;background:var(--ink);border-radius:3px}
+.controls{display:flex;align-items:center;gap:12px}
+.icon{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;border:1px solid transparent;background:transparent;cursor:pointer;transition:background var(--m-in) var(--ease),transform var(--m-in) var(--ease)}
+.icon:hover{background:var(--surface)} .icon:active{transform:scale(.94)}
+.icon svg{width:20px;height:20px}
+.play{width:56px;height:56px;background:var(--accent);border-color:var(--ink)}
+.play:hover{background:#a99d12}
+.right{display:flex;justify-content:flex-end;align-items:center;gap:16px}
+.speed{display:flex;align-items:center;gap:8px;font:500 13px var(--f-mono)}
+.speed button{height:36px;min-width:52px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:transparent;cursor:pointer;font:inherit}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><img src="../../../src/classnotes/ui/icon.png" alt="">Class Notes</div>
+    <span class="crumb">/ <b id="title"></b> · <span id="date"></span></span>
+    <span class="grow"></span>
+    <label class="field"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input placeholder="Search all classes"><span class="kbd">Ctrl K</span></label>
+    <button class="btn">All classes</button>
+    <button class="btn">Export</button>
+  </header>
+
+  <main class="stage">
+    <aside class="learn" id="learn"></aside>
+    <div class="col" id="col"></div>
+    <div class="map" id="map"></div>
+  </main>
+
+  <footer class="player">
+    <div class="track"><span>45:05</span><div class="bar"><i></i></div><span>1:42:34</span></div>
+    <div class="controls">
+      <button class="icon" id="prev" title="Previous line (←)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="icon" title="Replay this line (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+      <button class="icon play" title="Play or pause (Space)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="icon" title="Stop after this line (S)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg></button>
+      <button class="icon" id="next" title="Next line (→)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+    </div>
+    <div class="right">
+      <div class="speed"><button id="slower">−</button><span id="spd">1×</span><button id="faster">+</button></div>
+      <button class="btn" id="nextflag">Next line to check <span class="kbd">F</span></button>
+    </div>
+  </footer>
+</div>
+<script src="data.js"></script>
+<script>
+const C = window.CLASS, $ = s => document.querySelector(s);
+const clock = t => { t = Math.floor(t); const h = Math.floor(t/3600), m = Math.floor(t%3600/60), s = t%60;
+  return (h ? h + ":" + String(m).padStart(2,"0") : String(m).padStart(2,"0")) + ":" + String(s).padStart(2,"0"); };
+$("#title").textContent = C.title; $("#date").textContent = C.date;
+let i = C.segments.findIndex(s => s.id === C.playing), editing = false;
+function render(){
+  const ctx = k => { const s = C.segments[k]; return s ? `<div class="ctx" data-k="${k}"><time>${clock(s.start)}</time><p>${s.text}</p></div>` : ""; };
+  const s = C.segments[i];
+  const q = C.quran.seg === s.id ? `<div class="quran"><div class="ref">${C.quran.ref} · ${C.quran.translator}</div><div class="ar">${C.quran.arabic}</div><p>${C.quran.english}</p></div>` : "";
+  const en = editing
+    ? `<textarea id="ed">${s.text}</textarea><div class="acts"><button class="btn btn--primary" id="save">Save line</button><button class="link" id="cancel">Cancel</button></div>`
+    : `<p class="en">${s.text}</p>`;
+  $("#col").innerHTML = ctx(i-2) + ctx(i-1) + `<div class="now"><time>${clock(s.start)}</time><div>${en}<p class="ur">${s.source}</p>${q}
+      ${editing ? "" : `<div class="acts">${s.flag?`<span class="flag">Check: ${s.flag.toLowerCase()}</span>`:""}<button class="link" id="edit">Edit translation <span class="kbd">E</span></button></div>`}</div></div>` + ctx(i+1) + ctx(i+2);
+}
+render();
+$("#learn").innerHTML = `<b style="font-weight:500">Learned from your edit</b><p style="margin:8px 0 0">“${C.learned.from}” → “${C.learned.to}” for <span class="ur">${C.learned.urdu}</span>. ${C.learned.others} more lines here use it.</p>
+  <div class="acts"><button class="btn">Update ${C.learned.others} lines</button><button class="link">Not now</button></div>`;
+document.addEventListener("click", e => {
+  const c = e.target.closest(".ctx"); if (c && !editing) { i = +c.dataset.k; render(); return; }
+  if (e.target.closest("#edit")) { editing = true; render(); $("#ed").focus(); }
+  else if (e.target.closest("#save")) { C.segments[i].text = $("#ed").value; editing = false; render(); }
+  else if (e.target.closest("#cancel")) { editing = false; render(); }
+});
+$("#prev").onclick = () => { if (i > 0) { i--; editing = false; render(); } };
+$("#next").onclick = () => { if (i < C.segments.length - 1) { i++; editing = false; render(); } };
+const speeds = [0.75, 1, 1.25, 1.5]; let sp = 1;
+$("#slower").onclick = () => { sp = Math.max(0, sp - 1); $("#spd").textContent = speeds[sp] + "×"; };
+$("#faster").onclick = () => { sp = Math.min(3, sp + 1); $("#spd").textContent = speeds[sp] + "×"; };
+const flagged = C.segments.map((s, k) => s.flag ? k : -1).filter(k => k >= 0);
+$("#nextflag").onclick = () => { i = flagged.find(k => k > i) ?? flagged[0]; editing = false; render(); };
+const map = $("#map"); const h = () => map.clientHeight;
+function drawMap(){ map.innerHTML = ""; C.segments.filter(s => s.flag).forEach(s => { const u = document.createElement("u"); u.style.top = (s.start / C.duration * h()) + "px"; map.appendChild(u); });
+  const dot = document.createElement("i"); dot.style.top = (C.segments[i].start / C.duration * h() - 6) + "px"; map.appendChild(dot);
+  [["0:00",0],["1:42",1]].forEach(([t,f]) => { const sp = document.createElement("span"); sp.textContent = t; sp.style.top = (f * h() - 8) + "px"; map.appendChild(sp); }); }
+drawMap(); addEventListener("resize", drawMap);
+</script>
+</body>
+</html>

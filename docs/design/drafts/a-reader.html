@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Notes, draft A: reader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500&family=IBM+Plex+Mono:wght@400;500&family=Noto+Nastaliq+Urdu:wght@400&family=Amiri:wght@400&display=swap" rel="stylesheet">
+<style>
+/* Deal: palette mint-pink-accounts, type familjen, radius soft */
+:root{
+  --bg:#f8f8f8; --surface:#eeeeee; --panel:#ffffff; --ink:#0a0a0a; --accent:#1f6b3a;
+  --muted:#5b5f5c; --line:rgba(10,10,10,.13); --line-strong:rgba(10,10,10,.28);
+  --r-lg:20px; --r-md:12px; --r-sm:8px;
+  --f-ui:"Familjen Grotesk",system-ui,sans-serif; --f-mono:"IBM Plex Mono",ui-monospace,monospace;
+  --f-ur:"Noto Nastaliq Urdu","Urdu Typesetting",serif; --f-ar:"Amiri",serif;
+  --m-in:140ms; --m-out:200ms; --m-press:90ms; --ease:cubic-bezier(.2,.8,.2,1);
+}
+*{box-sizing:border-box} html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--f-ui);overflow:hidden}
+button,input,textarea{font:inherit;color:inherit}
+.app{display:grid;grid-template-columns:280px 1fr;grid-template-rows:1fr 80px;height:100vh}
+
+/* sidebar */
+.side{grid-row:1/3;border-right:1px solid var(--line);display:flex;flex-direction:column;padding:24px 16px;gap:16px;background:var(--bg)}
+.brand{display:flex;align-items:center;gap:12px;font-weight:500;font-size:20px;letter-spacing:-.02em;padding:0 8px}
+.brand img{width:28px;height:28px;border-radius:8px}
+.field{display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--panel);transition:border-color var(--m-in) var(--ease),box-shadow var(--m-in) var(--ease)}
+.field:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(31,107,58,.15)}
+.field input{border:0;outline:0;background:transparent;flex:1;min-width:0;font-size:15px}
+.kbd{font:500 12px/1 var(--f-mono);color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:4px 6px;background:var(--bg)}
+.label{font-size:13px;font-weight:500;color:var(--muted);padding:0 8px}
+.classes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.classes a{display:block;padding:12px;border-radius:var(--r-sm);text-decoration:none;color:inherit;transition:background var(--m-in) var(--ease)}
+.classes a:hover{background:var(--surface)}
+.classes a[aria-current]{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line)}
+.classes b{display:block;font-weight:500;font-size:15px}
+.classes span{font-size:13px;color:var(--muted)}
+.side .grow{flex:1}
+
+/* buttons: one primary, one secondary */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:44px;padding:0 20px;border-radius:var(--r-sm);font-size:15px;font-weight:500;cursor:pointer;border:1px solid var(--line-strong);background:var(--panel);transition:transform var(--m-in) var(--ease),background var(--m-in) var(--ease),border-color var(--m-in) var(--ease)}
+.btn:hover{transform:translateY(-1px);border-color:var(--ink);background:#f3f3f3}
+.btn:active{transform:translateY(1px) scale(.985);transition-duration:var(--m-press)}
+.btn--primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn--primary:hover{background:#1b5c32;border-color:#1b5c32}
+.btn:focus-visible,.icon:focus-visible,.seg-speed button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.link{color:var(--accent);text-decoration:none;background:linear-gradient(currentColor,currentColor) 0 100%/0 1px no-repeat;transition:background-size var(--m-in) var(--ease);cursor:pointer;border:0;padding:0;font-size:14px;font-weight:500}
+.link:hover{background-size:100% 1px}
+
+/* main */
+.main{display:flex;flex-direction:column;min-height:0}
+.head{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:24px 48px 16px;border-bottom:1px solid var(--line)}
+.head h1{margin:0;font-weight:500;font-size:26px;letter-spacing:-.025em;line-height:1.2}
+.head p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+.head .actions{display:flex;gap:12px;align-items:center}
+.menu{position:relative}
+.menu-list{position:absolute;right:0;top:52px;width:300px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:8px;display:none;z-index:5;box-shadow:0 12px 24px rgba(10,10,10,.08)}
+.menu.open .menu-list{display:block}
+.menu-list button{display:flex;justify-content:space-between;width:100%;padding:10px 12px;border:0;background:transparent;border-radius:var(--r-sm);cursor:pointer;font-size:15px;text-align:left}
+.menu-list button:hover{background:var(--surface)}
+.menu-list span{color:var(--muted);font:400 13px var(--f-mono)}
+
+.notice{margin:16px 48px 0;display:flex;align-items:center;gap:16px;padding:12px 16px;border:1px solid var(--line);background:var(--panel);border-radius:var(--r-md);font-size:15px}
+.notice .ur{font-family:var(--f-ur);font-size:18px;line-height:2}
+.notice .grow{flex:1}
+
+.scroll{flex:1;overflow:auto;padding:16px 48px 48px}
+.lines{max-width:820px;display:flex;flex-direction:column;gap:4px}
+.line{display:grid;grid-template-columns:88px 1fr;gap:16px;padding:16px;border-radius:var(--r-md);border:1px solid transparent;cursor:pointer;transition:background var(--m-in) var(--ease),border-color var(--m-in) var(--ease)}
+.line:hover{background:#f1f1f1}
+.line.playing{background:var(--panel);border-color:var(--line-strong)}
+.meta{display:flex;flex-direction:column;gap:6px;font:500 13px/1 var(--f-mono);color:var(--muted)}
+.meta .lang{font-family:var(--f-ui)}
+.playing .meta time{color:var(--accent)}
+.en{margin:0;font-size:17px;line-height:1.6}
+.ur{margin:8px 0 0;font-family:var(--f-ur);font-size:19px;line-height:2.1;color:#3b3e3c;direction:rtl;text-align:right}
+.tools{display:flex;gap:16px;margin-top:8px;align-items:center}
+.flag{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#7a4b00}
+.flag::before{content:"";width:8px;height:8px;border-radius:50%;background:#b26b00}
+.quran{margin-top:12px;padding:16px;border-radius:var(--r-md);background:var(--surface)}
+.quran .ref{font-size:13px;font-weight:500;color:var(--muted)}
+.quran .ar{font-family:var(--f-ar);font-size:24px;line-height:1.9;direction:rtl;text-align:right;margin:4px 0}
+.quran .tr{font-size:15px;margin:0}
+.editor textarea{width:100%;min-height:96px;border:1px solid var(--accent);border-radius:var(--r-sm);padding:12px;font-size:17px;line-height:1.6;background:var(--panel);outline:0;box-shadow:0 0 0 3px rgba(31,107,58,.15);resize:vertical}
+.editor .row{display:flex;gap:12px;margin-top:8px;align-items:center}
+.editor .hint{font-size:13px;color:var(--muted)}
+
+/* player */
+.player{grid-column:2;display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:24px;padding:0 48px;border-top:1px solid var(--line);background:var(--panel)}
+.controls{display:flex;align-items:center;gap:8px}
+.icon{width:40px;height:40px;display:grid;place-items:center;border-radius:50%;border:0;background:transparent;cursor:pointer;transition:background var(--m-in) var(--ease),transform var(--m-in) var(--ease)}
+.icon:hover{background:var(--surface)}
+.icon:active{transform:scale(.94)}
+.icon svg{width:20px;height:20px}
+.play{width:48px;height:48px;background:var(--accent);color:#fff}
+.play:hover{background:#1b5c32}
+.track{display:flex;align-items:center;gap:16px;font:500 13px var(--f-mono);color:var(--muted)}
+.bar{position:relative;flex:1;height:6px;border-radius:3px;background:var(--surface);cursor:pointer}
+.bar i{position:absolute;inset:0 auto 0 0;width:44%;background:var(--accent);border-radius:3px}
+.bar u{position:absolute;top:-5px;width:2px;height:16px;background:#b26b00;border-radius:1px}
+.seg-speed{display:flex;border:1px solid var(--line-strong);border-radius:var(--r-sm);overflow:hidden}
+.seg-speed button{border:0;background:transparent;height:36px;padding:0 10px;font:500 13px var(--f-mono);cursor:pointer}
+.seg-speed button[aria-pressed=true]{background:var(--ink);color:var(--bg)}
+.keys{font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><img src="../../../src/classnotes/ui/icon.png" alt="">Class Notes</div>
+    <label class="field"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" placeholder="Search all classes"><span class="kbd">Ctrl K</span></label>
+    <div class="label">Classes</div>
+    <ul class="classes"><li><a href="#" aria-current="page"><b>Session 19 · Hijrat e Rasool (SAW)</b><span>18 Nov 2026 · 1:42:34</span></a></li></ul>
+    <div class="grow"></div>
+    <button class="btn btn--primary">Add a class</button>
+    <button class="btn">Glossary and settings</button>
+  </aside>
+
+  <main class="main">
+    <header class="head">
+      <div><h1 id="title"></h1><p id="sub"></p></div>
+      <div class="actions">
+        <button class="btn" id="nextflag">Next line to check <span class="kbd">F</span></button>
+        <div class="menu" id="export"><button class="btn" aria-haspopup="true">Export</button>
+          <div class="menu-list" role="menu">
+            <button>Notes <span>.md</span></button><button>Word document <span>.docx</span></button><button>PDF <span>.pdf</span></button>
+            <button>Subtitles <span>.srt</span></button><button>Web subtitles <span>.vtt</span></button><button>Plain text <span>.txt</span></button>
+            <button>Spreadsheet <span>.csv</span></button><button>Data for search tools <span>.json</span></button>
+          </div></div>
+      </div>
+    </header>
+    <div class="notice" id="notice"></div>
+    <div class="scroll"><div class="lines" id="lines"></div></div>
+  </main>
+
+  <footer class="player">
+    <div class="controls">
+      <button class="icon" title="Previous line (←)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="icon" title="Replay this line (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+      <button class="icon play" id="play" title="Play or pause (Space)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="icon" title="Next line (→)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+    </div>
+    <div class="track"><span>45:05</span><div class="bar" id="bar"><i></i></div><span>1:42:34</span></div>
+    <div class="seg-speed" role="group" aria-label="Speed"><button>0.75×</button><button aria-pressed="true">1×</button><button>1.25×</button><button>1.5×</button></div>
+    <div class="keys"><span class="kbd">Space</span><span class="kbd">←</span><span class="kbd">→</span><span class="kbd">R</span></div>
+  </footer>
+</div>
+<script src="data.js"></script>
+<script>
+const C = window.CLASS, $ = s => document.querySelector(s);
+const clock = t => { t = Math.floor(t); const h = Math.floor(t/3600), m = Math.floor(t%3600/60), s = t%60;
+  return (h ? h + ":" + String(m).padStart(2,"0") : String(m).padStart(2,"0")) + ":" + String(s).padStart(2,"0"); };
+$("#title").textContent = C.title;
+$("#sub").textContent = `${C.date} · ${clock(C.duration)} · ${C.lines} lines · 4 lines to check`;
+$("#notice").innerHTML = `<span>You changed “${C.learned.from}” to “${C.learned.to}” at ${C.learned.at}. The Urdu word is <span class="ur">${C.learned.urdu}</span>.</span>
+  <span class="grow"></span><button class="btn btn--primary">Use “${C.learned.to}” from now on</button><button class="link">Not now</button>`;
+let playing = C.playing, editing = null;
+function render(){
+  $("#lines").innerHTML = C.segments.map(s => {
+    const q = C.quran.seg === s.id ? `<div class="quran"><div class="ref">${C.quran.ref} · ${C.quran.translator}</div><div class="ar">${C.quran.arabic}</div><p class="tr">${C.quran.english}</p></div>` : "";
+    const body = editing === s.id
+      ? `<div class="editor"><textarea id="ed">${s.text}</textarea><div class="row"><button class="btn btn--primary" data-save="${s.id}">Save line</button><button class="link" data-cancel>Cancel</button><span class="hint">Enter saves · Esc cancels · the machine version is kept</span></div></div>`
+      : `<p class="en">${s.text}</p>`;
+    return `<article class="line${s.id===playing?" playing":""}" data-id="${s.id}">
+      <div class="meta"><time>${clock(s.start)}</time><span class="lang">${s.lang==="ur"?"Urdu":"English"}</span></div>
+      <div>${body}<p class="ur">${s.source}</p>${q}
+        <div class="tools">${s.flag?`<span class="flag">Check: ${s.flag.toLowerCase()}</span>`:""}${editing===s.id?"":`<button class="link" data-edit="${s.id}">Edit translation</button>`}</div></div></article>`;
+  }).join("");
+}
+render();
+document.querySelector(".line.playing").scrollIntoView({block:"center"});
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-edit],[data-save],[data-cancel],.line,#export>.btn");
+  if (!t) { $("#export").classList.remove("open"); return; }
+  if (t.matches("#export>.btn")) { $("#export").classList.toggle("open"); return; }
+  if (t.dataset.edit) { editing = +t.dataset.edit; render(); $("#ed").focus(); return; }
+  if (t.dataset.save) { C.segments.find(s => s.id === +t.dataset.save).text = $("#ed").value; editing = null; render(); return; }
+  if (t.hasAttribute("data-cancel")) { editing = null; render(); return; }
+  if (t.classList.contains("line") && editing === null) { playing = +t.dataset.id; render(); }
+});
+document.querySelectorAll(".seg-speed button").forEach(b => b.onclick = () => document.querySelectorAll(".seg-speed button").forEach(x => x.setAttribute("aria-pressed", x === b)));
+const flagged = C.segments.filter(s => s.flag).map(s => s.id);
+$("#nextflag").onclick = () => { playing = flagged.find(id => id > playing) ?? flagged[0]; render(); document.querySelector(".line.playing").scrollIntoView({block:"center", behavior:"smooth"}); };
+const bar = $("#bar");
+C.segments.filter(s => s.flag).forEach(s => { const u = document.createElement("u"); u.style.left = (s.start / C.duration * 100) + "%"; bar.appendChild(u); });
+</script>
+</body>
+</html>
