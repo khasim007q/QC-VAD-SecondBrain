@@ -306,7 +306,7 @@ class ProgressStrip(QWidget):
             p.drawRoundedRect(QRectF(0, y - 3, w * self.pos_ms / self.dur_ms, 6), 3, 3)
         p.setBrush(QColor(t["flag_dot"]))
         for f in self.ticks:
-            p.drawRoundedRect(QRectF(f * w - 1, y - 8, 2, 16), 1, 1)
+            p.drawRoundedRect(QRectF(f * w - 1, y - 6, 2, 12), 1, 1)
         p.end()
 
 
@@ -337,7 +337,9 @@ class PlayerBar(QWidget):
 
         self.prev_btn = icon_button("prev", "Previous line (←)")
         self.replay_btn = icon_button("replay", "Replay this line (R)")
-        self.play_btn = icon_button("play", "Play or pause (Space)", "Play")
+        self.play_btn = icon_button(
+            "play", "Play or pause (Space)\n← → previous / next line · R replay line · S stop after each line\n"
+            "E edit the playing line · F next line to check · [ ] slower / faster · Ctrl+K search", "Play")
         self.next_btn = icon_button("next", "Next line (→)")
         self.stop_btn = icon_button("stopline", "Stop after each line (S)")
         self.stop_btn.setCheckable(True)
@@ -352,6 +354,7 @@ class PlayerBar(QWidget):
         self.total = QLabel("00:00")
         self.total.setObjectName("Clock")
         self.strip = ProgressStrip()
+        self.strip.setMinimumWidth(160)
         self.strip.seek.connect(self.seek_requested)
 
         self.speed_buttons: list[QPushButton] = []
@@ -371,19 +374,16 @@ class PlayerBar(QWidget):
 
         self.output = QComboBox()
         self.output.setToolTip("Sound output")
-        self.output.setMinimumWidth(180)
+        self.output.setMinimumWidth(150)
+        self.output.setMaximumWidth(220)
+        self.output.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.output.setMinimumContentsLength(14)
         self.output.activated.connect(lambda i: self.output_chosen.emit(self.output.itemData(i) or ""))
 
-        keys = QHBoxLayout()
-        keys.setSpacing(4)
-        for k in ("Space", "←", "→", "R", "S"):
-            lab = QLabel(k)
-            lab.setObjectName("Key")
-            keys.addWidget(lab)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(48, 0, 32, 0)
-        row.setSpacing(16)
+        row.setContentsMargins(40, 0, 24, 0)
+        row.setSpacing(12)
         for b in (self.prev_btn, self.replay_btn, self.play_btn, self.next_btn, self.stop_btn):
             row.addWidget(b)
         row.addSpacing(8)
@@ -392,7 +392,6 @@ class PlayerBar(QWidget):
         row.addWidget(self.total)
         row.addLayout(speed)
         row.addWidget(self.output)
-        row.addLayout(keys)
         self._playing = False
         self.refresh_icons()
 
@@ -428,7 +427,7 @@ class PlayerBar(QWidget):
     def set_outputs(self, devices: list[tuple[str, str]], current_id: str) -> None:
         self.output.blockSignals(True)
         self.output.clear()
-        self.output.addItem("Windows default output", "")
+        self.output.addItem("Windows default", "")
         for dev_id, name in devices:
             self.output.addItem(name, dev_id)
         i = self.output.findData(current_id)

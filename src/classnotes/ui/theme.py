@@ -77,6 +77,7 @@ QLineEdit#Search { background: $panel; border: 1px solid $line_strong; border-ra
   padding: 0 12px; min-height: 42px; font-size: 15px; }
 QLineEdit#Search:focus { border-color: $accent; }
 QListWidget#Classes, QListWidget#Results { background: transparent; border: none; outline: none; }
+QListWidget#Classes, QListWidget#Results { font-size: 14px; }
 QListWidget#Classes::item, QListWidget#Results::item { padding: 10px 12px; border-radius: 8px; margin: 2px 0; }
 QListWidget#Classes::item:hover, QListWidget#Results::item:hover { background: $surface; }
 QListWidget#Classes::item:selected { background: $panel; color: $ink; border: 1px solid $line; }
@@ -124,7 +125,7 @@ QPushButton#Icon:checked { background: $surface; border: 1px solid $line_strong;
 QPushButton#Play { min-width: 48px; max-width: 48px; min-height: 48px; max-height: 48px; padding: 0;
   border-radius: 24px; background: $accent; border: none; }
 QPushButton#Play:hover { background: $accent_hover; }
-QPushButton#Speed { min-height: 34px; padding: 0 10px; font-family: "$mono"; font-size: 13px;
+QPushButton#Speed { min-height: 34px; min-width: 52px; padding: 0 4px; font-family: "$mono"; font-size: 13px;
   border: 1px solid $line_strong; border-radius: 0; background: $panel; }
 QPushButton#Speed:checked { background: $ink; color: $page; border-color: $ink; }
 QLabel#Clock { font-family: "$mono"; font-size: 13px; color: $muted; }

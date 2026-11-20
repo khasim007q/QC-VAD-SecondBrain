@@ -50,6 +50,8 @@ class Sidebar(QWidget):
         self.label.setObjectName("SectionLabel")
         self.classes = QListWidget()
         self.classes.setObjectName("Classes")
+        self.classes.setWordWrap(True)
+        self.classes.setTextElideMode(Qt.ElideNone)
         self.classes.itemClicked.connect(self._class_clicked)
         self.classes.itemActivated.connect(self._class_clicked)
         self.results = QListWidget()
@@ -85,6 +87,7 @@ class Sidebar(QWidget):
         for rec in records:
             item = QListWidgetItem(f"{rec.title or rec.class_id}\n{rec.date} · {fmt_clock(rec.duration_s)}")
             item.setData(Qt.UserRole, rec.class_id)
+            item.setSizeHint(QSize(0, 64))  # two lines; Qt ignores stylesheet padding when sizing items
             self.classes.addItem(item)
         self.classes.blockSignals(False)
         self.select_class(current)

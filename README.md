@@ -71,8 +71,49 @@ Double-click `run.bat`, or:
 uv run classnotes
 ```
 
-Then **+ New class** → pick the recording → date and title → **Process**.
-Classes are stored in `Documents\ClassNotes\<date>\`. **Glossary & settings** has:
+Or use the **Class Notes** shortcut on the desktop / Start menu
+(`powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1` creates it).
+
+Then **Add a class** → pick the recording → date and title → **Process**.
+Classes are stored in `Documents\ClassNotes\<date>\`.
+
+### Reviewing a class
+
+The screen is built for listening straight through and stopping to fix lines.
+
+- Click a line to play it. The playing line is boxed and the list follows it; scroll away and
+  **Back to the playing line** brings you back.
+- **Edit translation** (or **E**) turns the English into a text box where it stands. **Enter**
+  saves, **Shift+Enter** adds a new line, **Esc** cancels. Playback pauses while you type and
+  carries on after. The machine translation is always kept; **Revert to machine** brings it back.
+- **Lines to check** are marked with a reason (language unsure, very short, translation may be
+  missing words, words may be misheard, translation unsure). **Next line to check** (**F**) jumps
+  to the next one; **Looks fine** clears a mark.
+- **Stop after each line** (the button after Next, or **S**) pauses at the end of every line.
+- Speed 0.75× to 1.5× keeps the teacher's pitch. The output list picks the speaker or headset;
+  **Windows default** follows Windows when you switch devices.
+- **Search all classes** (**Ctrl+K**) finds English, Urdu or titles across every class.
+- **Export**: Notes (.md), Word (.docx), PDF, Subtitles (.srt), Web subtitles (.vtt), Plain text
+  (.txt), Spreadsheet (.csv, opens in Excel with Urdu intact), Data for search tools (.json).
+- **More**: Re-process, Open folder, Locate recording.
+
+| Key | Action |
+|---|---|
+| Space | play / pause |
+| ← / → | previous / next line |
+| R | replay the playing line |
+| S | stop after each line on/off |
+| E | edit the playing line |
+| F | next line to check |
+| [ / ] | slower / faster |
+| Ctrl+K | search all classes |
+
+Urdu is shown in Windows' Urdu Typesetting (Nastaliq) font when it is installed
+(Settings → Apps → Optional features → *Urdu Supplemental Fonts*), otherwise in Segoe UI.
+
+**Glossary & settings** has:
+
+- **Theme**: Follow Windows (default), Light or Dark.
 
 - **Glossary**: words Whisper should expect (surah names, Islamic terms, the teacher's common
   phrases). It biases Whisper toward the right spelling (e.g. ظہر, not زہر "poison").
