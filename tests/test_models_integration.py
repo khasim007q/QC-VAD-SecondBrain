@@ -48,4 +48,14 @@ def test_whisper_batch_runs_language_and_text_in_one_pass():
 
     out = asr.transcribe_batch(clips, {"ur": "قرآن", "en": "Quran", "ar": None}, choose)
     assert len(out) == 2 and seen == [16000 * 3, 16000 * 8]
-    assert all(lang in ("ur", "en", "ar") and isinstance(texts, list) for lang, _, texts in out)
+    assert all(len(r) == 4 for r in out)
+    assert all(lang in ("ur", "en", "ar") and isinstance(texts, list) and (lp is None or isinstance(lp, float))
+               for lang, _, texts, lp in out)
+
+
+def test_nllb_scores_its_translations():
+    from classnotes.translate import NllbTranslator
+
+    tr = NllbTranslator(models.nllb_dir(), "cuda" if models.cuda_available() else "cpu")
+    out = tr.translate_scored(["یہ ایک کتاب ہے۔"])
+    assert len(out) == 1 and "book" in out[0][0].lower() and out[0][1] < 0

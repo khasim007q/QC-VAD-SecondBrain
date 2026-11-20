@@ -73,12 +73,14 @@ def run_pipeline(
         chunk = blocks[j:j + bs]
         clips = [audio[b.start:b.end] for b in chunk]
         heard = []
-        for b, clip, (lang, conf, texts) in zip(chunk, clips, asr.transcribe_batch(clips, prompts, choose)):
+        for b, clip, (lang, conf, texts, logprob) in zip(chunk, clips,
+                                                         asr.transcribe_batch(clips, prompts, choose)):
             texts = [t.strip() for t in texts if t.strip()]
             if lang == "en" and _urdu_letters(texts) > URDU_SCRIPT_LIMIT:
                 lang = "ur"  # mixed speech the detector called English, but it is Urdu
                 texts = [t.strip() for t in asr.transcribe(clip, "ur", prompts["ur"]) if t.strip()]
-            heard.append((replace(b, lang=lang, conf=conf), texts))
+                logprob = None
+            heard.append((replace(b, lang=lang, conf=conf), texts, logprob))
         for seg in _make_segments(len(segments), heard, translator, terms):
             segments.append(seg)
             on_segment(seg)
@@ -87,19 +89,22 @@ def run_pipeline(
     return segments
 
 
-def _make_segments(first_id: int, heard: list[tuple[LangSpan, list[str]]],
+def _make_segments(first_id: int, heard: list[tuple[LangSpan, list[str], float | None]],
                    translator: Translator, terms) -> list[Segment]:
     """Build segments for one batch; all its Urdu sentences go to the translator in one call."""
-    sentences = {i: split_sentences(texts) for i, (span, texts) in enumerate(heard)
+    sentences = {i: split_sentences(texts) for i, (span, texts, _) in enumerate(heard)
                  if span.lang == "ur" and texts}
     flat = [apply_terms(apply_context_fixes(s, " ".join(heard[i][1])), terms)
             for i in sentences for s in sentences[i]]
-    english = iter(translator.translate(flat) if flat else [])
+    english = iter(translator.translate_scored(flat) if flat else [])
     out: list[Segment] = []
-    for i, (span, texts) in enumerate(heard):
-        translated = [next(english) for _ in sentences.get(i, [])]
-        seg = _make_segment(first_id + len(out), span, texts, translated, sentences.get(i))
+    for i, (span, texts, logprob) in enumerate(heard):
+        scored = [next(english) for _ in sentences.get(i, [])]
+        seg = _make_segment(first_id + len(out), span, texts, [t for t, _ in scored], sentences.get(i))
         if seg is not None:
+            seg.asr_logprob = None if logprob is None else round(logprob, 3)
+            if scored:
+                seg.mt_score = round(sum(sc for _, sc in scored) / len(scored), 3)
             out.append(seg)
     return out
 

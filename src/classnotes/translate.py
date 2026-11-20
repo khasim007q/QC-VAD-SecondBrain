@@ -173,8 +173,8 @@ def apply_terms(sentence: str, terms: list[tuple[str, str]]) -> str:
 
 
 class Translator(Protocol):
-    def translate(self, sentences: list[str]) -> list[str]:
-        """Return one English sentence per input, same order."""
+    def translate_scored(self, sentences: list[str]) -> list[tuple[str, float]]:
+        """One (English, average token log-probability) per input, same order."""
 
 
 class NllbTranslator:
@@ -193,6 +193,9 @@ class NllbTranslator:
         self._batch = batch_size
 
     def translate(self, sentences: list[str]) -> list[str]:
+        return [text for text, _ in self.translate_scored(sentences)]
+
+    def translate_scored(self, sentences: list[str]) -> list[tuple[str, float]]:
         if not sentences:
             return []
         # NLLB input format: <src_lang> pieces... </s>; CTranslate2 maps pieces to ids itself.
@@ -206,9 +209,10 @@ class NllbTranslator:
             # Stops degenerate loops ("no, no, no, ...", "the Companions of the Companions...")
             no_repeat_ngram_size=4,
             repetition_penalty=1.1,
+            return_scores=True,  # already normalised by length
         )
-        out: list[str] = []
+        out: list[tuple[str, float]] = []
         for r in results:
             tokens = [t for t in r.hypotheses[0] if t not in (self.TGT, "</s>")]
-            out.append(self._sp.decode(tokens).strip())
+            out.append((self._sp.decode(tokens).strip(), float(r.scores[0])))
         return out

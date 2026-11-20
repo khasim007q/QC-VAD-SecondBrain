@@ -52,7 +52,7 @@ def load_audio(path: str | Path) -> np.ndarray:
 
 
 ChooseFn = Callable[[list[tuple[str, float]], int], tuple[str, float]]
-BlockResult = tuple[str, float, list[str]]  # (language, confidence, texts)
+BlockResult = tuple[str, float, list[str], "float | None"]  # (language, confidence, texts, avg log-prob)
 
 
 class Asr(Protocol):
@@ -137,7 +137,8 @@ class WhisperAsr:
             avg_logprob = r.scores[0] * len(ids) / (len(ids) + 1)
             if get_compression_ratio(" ".join(texts)) > MAX_COMPRESSION or avg_logprob < MIN_AVG_LOGPROB:
                 texts = self.transcribe(clip, lang, prompts.get(lang))
-            out.append((lang, conf, texts))
+                avg_logprob = None  # redone by the careful decoder: its score is not comparable
+            out.append((lang, conf, texts, avg_logprob))
         return out
 
     def speech_spans(self, audio: np.ndarray) -> list[tuple[int, int]]:

@@ -35,7 +35,7 @@ class FakeAsr:
         for clip in clips:
             lang, conf = choose(PROBS[self.spans[int(clip[0])][2]], len(clip))
             self.prompts.append((lang, prompts[lang]))
-            out.append((lang, conf, self._texts(clip)))
+            out.append((lang, conf, self._texts(clip), -0.25))
         return out
 
     def transcribe(self, clip, lang, prompt):
@@ -47,11 +47,15 @@ class FakeAsr:
 class FakeTranslator:
     def __init__(self):
         self.seen = []
+        self.calls = 0
+
+    def translate_scored(self, sentences):
+        self.calls += 1
+        self.seen.extend(sentences)
+        return [("EN:" + s, -0.5) for s in sentences]
 
     def translate(self, sentences):
-        self.calls = getattr(self, "calls", 0) + 1
-        self.seen.extend(sentences)
-        return ["EN:" + s for s in sentences]
+        return [t for t, _ in self.translate_scored(sentences)]
 
 
 def make_audio(spans, total_s=60):
@@ -213,3 +217,15 @@ def test_pipeline_fixes_zuhr_in_prayer_context_before_translation():
     result, _, _, _, tr = run(spans)
     assert tr.seen == ["جمعہ آپ اکیلے پڑھیں گے تو Zuhr میں کاؤنٹ ہو جائے گا۔"]
     assert "زہر" in result[0].source  # stored Urdu stays as heard
+
+
+def test_segments_carry_whisper_and_nllb_scores():
+    result, *_ = run([(0, 5, "ur", ["ایک۔", "دو۔"]), (10, 14, "en", ["Hello."])])
+    ur, en = result
+    assert ur.asr_logprob == -0.25 and ur.mt_score == -0.5
+    assert en.asr_logprob == -0.25 and en.mt_score is None
+
+
+def test_redone_english_block_has_no_whisper_score():
+    result, *_ = run([(0, 5, "en", ["یہ دراصل اردو میں بولا گیا جملہ ہے۔"])])
+    assert result[0].asr_logprob is None
