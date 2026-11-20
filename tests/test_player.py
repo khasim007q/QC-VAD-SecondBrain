@@ -285,3 +285,13 @@ def test_output_list_changes_are_announced(qapp):
     state["devices"] = [("a", "Speakers"), ("b", "JBL Quantum 300"), ("c", "USB headset")]
     pb.devices_changed()
     assert got and ("c", "USB headset") in got[-1]
+
+
+def test_bar_has_no_output_picker(qapp):
+    bar = PlayerBar()
+    assert not hasattr(bar, "output") and not hasattr(bar, "output_chosen")
+
+
+def test_speed_buttons_form_one_rounded_control(qapp):
+    bar = PlayerBar()
+    assert [b.property("segment") for b in bar.speed_buttons] == ["first", "mid", "mid", "last"]

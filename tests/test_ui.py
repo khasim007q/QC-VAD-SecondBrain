@@ -316,18 +316,34 @@ def test_switching_class_mid_edit_asks_first(qapp, tmp_path, answer):
     win.close()
 
 
-def test_output_list_refreshes_in_the_bar(qapp, tmp_path):
+def test_sound_output_is_chosen_in_settings(qapp, tmp_path):
     from classnotes.ui.main_window import MainWindow
 
     store.save_record(make_record(), tmp_path)
-    state = {"devices": [("a", "Speakers")]}
-    pb = Playback(player=FakePlayer(), devices=lambda: (state["devices"], "a"), set_device=lambda d: None)
+    state = {"devices": [("a", "Speakers")], "set": []}
+    pb = Playback(player=FakePlayer(), devices=lambda: (state["devices"], "a"),
+                  set_device=lambda d: state["set"].append(d))
     win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False, playback=pb)
-    assert win.bar.output.count() == 2  # Windows default + Speakers
-    state["devices"] = [("a", "Speakers"), ("c", "USB headset")]
-    pb.devices_changed()
-    assert win.bar.output.count() == 3 and win.bar.output.itemText(2) == "USB headset"
+    state["devices"] = [("a", "Speakers"), ("b", "JBL Quantum 300")]  # plugged in after start
+    dlg = win._settings_dialog()
+    assert [dlg.output.itemText(i) for i in range(dlg.output.count())] == [
+        "Windows default", "Speakers", "JBL Quantum 300"]
+    dlg.output.setCurrentIndex(dlg.output.findData("b"))
+    win._apply_settings(dlg)
+    assert win.settings.audio_output == "b" and state["set"][-1] == "b"
     win.close()
+
+
+def test_dialog_main_buttons_are_primary(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from classnotes.ui.dialogs import NewClassDialog, SettingsDialog
+
+    s = SettingsDialog(Settings())
+    assert s.buttons.button(QDialogButtonBox.Save).property("kind") == "primary"
+    assert s.buttons.button(QDialogButtonBox.Cancel).property("kind") == "secondary"
+    n = NewClassDialog()
+    assert n.buttons.button(QDialogButtonBox.Ok).property("kind") == "primary"
 
 
 def test_search_sees_edits_made_this_session(qapp, tmp_path):
@@ -350,4 +366,16 @@ def test_dark_theme_at_startup_draws_light_icons(qapp, tmp_path):
     ink = max((img.pixelColor(x, y) for x in range(40) for y in range(40)), key=lambda c: c.alpha())
     assert ink.lightness() > 150  # bone-coloured, not near-black
     theme.apply(qapp, Settings(theme="light"))
+    win.close()
+
+
+def test_menus_and_dialog_dropdowns_are_rounded(qapp, tmp_path):
+    from classnotes.ui.dialogs import SettingsDialog
+
+    win, _ = window(qapp, tmp_path)
+    popups = [win.export_menu, win.more_menu]
+    s = SettingsDialog(Settings(), outputs=[("a", "Speakers")])
+    popups += [s.theme.view().window(), s.output.view().window(), s.whisper.view().window(), s.device.view().window()]
+    for w in popups:
+        assert w.testAttribute(Qt.WA_TranslucentBackground) and w.windowFlags() & Qt.FramelessWindowHint
     win.close()

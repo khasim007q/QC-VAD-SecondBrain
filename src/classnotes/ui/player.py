@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Si
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget,
+    QButtonGroup, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget,
 )
 
 from ..store import Segment, fmt_clock
@@ -365,7 +365,6 @@ class PlayerBar(QWidget):
     stop_after_toggled = Signal(bool)
     seek_requested = Signal(int)
     rate_chosen = Signal(float)
-    output_chosen = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -408,9 +407,10 @@ class PlayerBar(QWidget):
         self._speed_group = QButtonGroup(self)
         speed = QHBoxLayout()
         speed.setSpacing(0)
-        for r in RATES:
+        for i, r in enumerate(RATES):
             b = QPushButton(f"{r:g}×")
             b.setObjectName("Speed")
+            b.setProperty("segment", "first" if i == 0 else "last" if i == len(RATES) - 1 else "mid")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, r=r: self.rate_chosen.emit(r))
@@ -419,13 +419,6 @@ class PlayerBar(QWidget):
             speed.addWidget(b)
         self.speed_buttons[1].setChecked(True)
 
-        self.output = QComboBox()
-        self.output.setToolTip("Sound output")
-        self.output.setMinimumWidth(150)
-        self.output.setMaximumWidth(220)
-        self.output.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.output.setMinimumContentsLength(14)
-        self.output.activated.connect(lambda i: self.output_chosen.emit(self.output.itemData(i) or ""))
 
 
         row = QHBoxLayout(self)
@@ -438,7 +431,6 @@ class PlayerBar(QWidget):
         row.addWidget(self.strip, 1)
         row.addWidget(self.total)
         row.addLayout(speed)
-        row.addWidget(self.output)
         self._playing = False
         self.refresh_icons()
 
@@ -470,16 +462,6 @@ class PlayerBar(QWidget):
         self.stop_btn.blockSignals(True)
         self.stop_btn.setChecked(on)
         self.stop_btn.blockSignals(False)
-
-    def set_outputs(self, devices: list[tuple[str, str]], current_id: str) -> None:
-        self.output.blockSignals(True)
-        self.output.clear()
-        self.output.addItem("Windows default", "")
-        for dev_id, name in devices:
-            self.output.addItem(name, dev_id)
-        i = self.output.findData(current_id)
-        self.output.setCurrentIndex(i if i >= 0 else 0)
-        self.output.blockSignals(False)
 
     def set_controls_enabled(self, on: bool) -> None:
         for w in (self.prev_btn, self.replay_btn, self.play_btn, self.next_btn, self.stop_btn, self.strip,

@@ -90,8 +90,7 @@ The screen is built for listening straight through and stopping to fix lines.
   missing words, words may be misheard, translation unsure). **Next line to check** (**F**) jumps
   to the next one; **Looks fine** clears a mark.
 - **Stop after each line** (the button after Next, or **S**) pauses at the end of every line.
-- Speed 0.75× to 1.5× keeps the teacher's pitch. The output list picks the speaker or headset;
-  **Windows default** follows Windows when you switch devices.
+- Speed 0.75× to 1.5× keeps the teacher's pitch.
 - **Search all classes** (**Ctrl+K**) finds English, Urdu or titles across every class.
 - **Export**: Notes (.md), Word (.docx), PDF, Subtitles (.srt), Web subtitles (.vtt), Plain text
   (.txt), Spreadsheet (.csv, opens in Excel with Urdu intact), Data for search tools (.json).
@@ -114,6 +113,8 @@ Urdu is shown in Windows' Urdu Typesetting (Nastaliq) font when it is installed
 **Glossary & settings** has:
 
 - **Theme**: Follow Windows (default), Light or Dark.
+- **Sound output**: Windows default (follows Windows when you switch devices) or a specific
+  speaker or headset. If that one is unplugged, playback falls back to Windows default.
 
 - **Glossary**: words Whisper should expect (surah names, Islamic terms, the teacher's common
   phrases). It biases Whisper toward the right spelling (e.g. ظہر, not زہر "poison").

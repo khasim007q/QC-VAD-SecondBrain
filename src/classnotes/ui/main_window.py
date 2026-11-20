@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         self.more_menu.addAction("Open folder", self.open_folder)
         self.more_menu.addAction("Locate recording", self.locate_audio)
         self.more_btn.setMenu(self.more_menu)
+        theme.round_popups(self.export_menu, self.more_menu)
         header = QFrame()
         header.setObjectName("Header")
         hl = QHBoxLayout(header)
@@ -182,7 +183,6 @@ class MainWindow(QMainWindow):
         pb.line_changed.connect(self._line_changed)
         pb.position.connect(self._position)
         pb.playing_changed.connect(bar.set_playing)
-        pb.outputs_changed.connect(lambda: bar.set_outputs(pb.outputs(), self.settings.audio_output))
         pb.status.connect(lambda m: self.statusBar().showMessage(m, 10000))
         pb.error.connect(lambda m: self.statusBar().showMessage(f"{m} Try another output.", 15000))
         bar.play_clicked.connect(pb.toggle)
@@ -192,7 +192,6 @@ class MainWindow(QMainWindow):
         bar.seek_requested.connect(pb.seek_ms)
         bar.stop_after_toggled.connect(self.set_stop_after)
         bar.rate_chosen.connect(self.set_rate)
-        bar.output_chosen.connect(self.set_output)
         self.next_flag_btn.clicked.connect(self.next_flagged)
 
         pb.set_rate(self.settings.playback_rate)
@@ -200,7 +199,6 @@ class MainWindow(QMainWindow):
         pb.set_stop_after_line(self.settings.stop_after_line)
         bar.set_stop_after(self.settings.stop_after_line)
         pb.set_output(self.settings.audio_output)
-        bar.set_outputs(pb.outputs(), self.settings.audio_output)
 
     def _shortcuts(self) -> None:
         keys = {
@@ -534,19 +532,26 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         if not self._settle_edit():
             return
-        dlg = SettingsDialog(self.settings, self)
+        dlg = self._settings_dialog()
         if dlg.exec():
-            old_lib = self.library_dir()
-            dlg.apply(self.settings)
-            self._persist()
-            if self.library_dir() != old_lib and self.record is not None:
-                # The open class belongs to the old library: close it rather than mix the two.
-                self.playback.set_source(None)
-                self.record, self.record_lib = None, None
-                self.banner.hide()
-                self._show_welcome()
-            self.apply_theme()
-            self.refresh_library()
+            self._apply_settings(dlg)
+
+    def _settings_dialog(self) -> SettingsDialog:
+        return SettingsDialog(self.settings, self, outputs=self.playback.outputs())
+
+    def _apply_settings(self, dlg: SettingsDialog) -> None:
+        old_lib = self.library_dir()
+        dlg.apply(self.settings)
+        self._persist()
+        self.playback.set_output(self.settings.audio_output)
+        if self.library_dir() != old_lib and self.record is not None:
+            # The open class belongs to the old library: close it rather than mix the two.
+            self.playback.set_source(None)
+            self.record, self.record_lib = None, None
+            self.banner.hide()
+            self._show_welcome()
+        self.apply_theme()
+        self.refresh_library()
 
     def _persist(self) -> None:
         if self.persist:

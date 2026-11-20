@@ -63,3 +63,24 @@ def qapp_theme():
     from PySide6.QtWidgets import QApplication
 
     return QApplication.instance() or QApplication([])
+
+
+def test_buttons_fields_and_speed_control_are_rounded():
+    css = qss(LIGHT, pick_fonts({"Segoe UI"}))
+    for sel in ('QPushButton#Speed[segment="first"]', 'QPushButton#Speed[segment="last"]', "QLineEdit", "QPlainTextEdit",
+                "QAbstractSpinBox", "QComboBox::drop-down", "QDialogButtonBox"):
+        assert sel in css
+    assert "border-radius: 0;" not in css.replace('QPushButton#Speed[segment="mid"] { border-radius: 0; }', "")
+
+
+def test_round_popups_makes_menus_and_dropdown_lists_frameless(qapp_theme):
+    from PySide6.QtWidgets import QComboBox, QMenu, QWidget
+
+    menu = QMenu()
+    host = QWidget()
+    combo = QComboBox(host)
+    combo.addItems(["Windows default", "Speakers"])
+    theme.round_popups(menu, host)
+    for w in (menu, combo.view().window()):
+        assert w.testAttribute(Qt.WA_TranslucentBackground)
+        assert w.windowFlags() & Qt.FramelessWindowHint

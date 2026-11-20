@@ -7,11 +7,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QAbstractSpinBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
+    QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ..settings import Settings
+from .theme import round_popups
 
 AUDIO_FILTER = "Audio/video (*.mp3 *.m4a *.wav *.aac *.ogg *.opus *.flac *.wma *.mp4 *.webm *.mkv);;All files (*)"
 
@@ -20,11 +21,35 @@ def _browse_row(edit: QLineEdit, button_text: str, on_click) -> QWidget:
     w = QWidget()
     lay = QHBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(8)
     lay.addWidget(edit, 1)
     b = QPushButton(button_text)
+    b.setProperty("kind", "secondary")
     b.clicked.connect(on_click)
     lay.addWidget(b)
     return w
+
+
+def _buttons(box: QDialogButtonBox, main) -> QDialogButtonBox:
+    """One filled main button (Save / Process); every other button is the outlined secondary."""
+    for b in box.buttons():
+        b.setProperty("kind", "primary" if b is box.button(main) else "secondary")
+        b.setCursor(Qt.PointingHandCursor)
+    return box
+
+
+def _hint(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setObjectName("Hint")
+    lab.setWordWrap(True)
+    return lab
+
+
+def _layout(dialog: QDialog) -> QVBoxLayout:
+    lay = QVBoxLayout(dialog)
+    lay.setContentsMargins(24, 24, 24, 20)
+    lay.setSpacing(16)
+    return lay
 
 
 class NewClassDialog(QDialog):
@@ -48,14 +73,15 @@ class NewClassDialog(QDialog):
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Process")
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+        _buttons(self.buttons, QDialogButtonBox.Ok)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
-        note = QLabel("Processing runs on this PC. Nothing is uploaded.")
-        note.setStyleSheet("color: gray;")
-        lay = QVBoxLayout(self)
+        note = _hint("Processing runs on this PC. Nothing is uploaded.")
+        lay = _layout(self)
         lay.addLayout(form)
         lay.addWidget(note)
         lay.addWidget(self.buttons)
+        round_popups(self)
 
     def _browse(self):
         f, _ = QFileDialog.getOpenFileName(self, "Choose class recording", "", AUDIO_FILTER)
@@ -73,7 +99,7 @@ class NewClassDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, parent=None):
+    def __init__(self, settings: Settings, parent=None, outputs: list[tuple[str, str]] | None = None):
         super().__init__(parent)
         self.setWindowTitle("Glossary & settings")
         self.setMinimumWidth(560)
@@ -94,6 +120,15 @@ class SettingsDialog(QDialog):
         for value, label in (("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark")):
             self.theme.addItem(label, value)
         self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
+        self.output = QComboBox()
+        self.output.addItem("Windows default", "")
+        for dev_id, name in outputs or []:
+            self.output.addItem(name, dev_id)
+        i = self.output.findData(s.audio_output)
+        if i < 0 and s.audio_output:  # remembered but not plugged in right now
+            self.output.addItem("Previously chosen output (not connected)", s.audio_output)
+            i = self.output.count() - 1
+        self.output.setCurrentIndex(max(0, i))
         self.library = QLineEdit(s.library_dir)
         self.min_silence = QSpinBox(minimum=100, maximum=3000, singleStep=100, value=s.min_silence_ms)
         self.max_speech = self._dbl(s.max_speech_s, 5, 30, 1)
@@ -103,19 +138,16 @@ class SettingsDialog(QDialog):
         self.merge_max = self._dbl(s.merge_max_s, 5, 29, 1)
 
         form = QFormLayout()
-        hint = QLabel("Words Whisper should expect: surah names, Islamic terms, the teacher's common phrases.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray;")
+        hint = _hint("Words Whisper should expect: surah names, Islamic terms, the teacher's common phrases.")
         form.addRow("Glossary", self.glossary)
         form.addRow("", hint)
         form.addRow("Replace before\ntranslating", self.terms)
-        terms_hint = QLabel("One per line: urdu = replacement. Fixes words Whisper mis-spells or "
-                            "NLLB mistranslates. The Urdu shown in the notes is not changed.")
-        terms_hint.setWordWrap(True)
-        terms_hint.setStyleSheet("color: gray;")
+        terms_hint = _hint("One per line: urdu = replacement. Fixes words Whisper mis-spells or "
+                           "NLLB mistranslates. The Urdu shown in the notes is not changed.")
         form.addRow("", terms_hint)
         form.addRow("Library folder", _browse_row(self.library, "Browse...", self._browse))
         form.addRow("Theme", self.theme)
+        form.addRow("Sound output", self.output)
         form.addRow("Speech model", self.whisper)
         form.addRow("Device", self.device)
         form.addRow("Min. silence between phrases (ms)", self.min_silence)
@@ -124,12 +156,28 @@ class SettingsDialog(QDialog):
         form.addRow("Shorter phrases count as Urdu (s)", self.min_dur)
         form.addRow("Join phrases with gaps under (s)", self.merge_gap)
         form.addRow("Max. joined length (s)", self.merge_max)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.addLayout(form)
-        lay.addWidget(buttons)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
+        self.buttons = _buttons(QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel),
+                                QDialogButtonBox.Save)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        # The form scrolls, so the dialog (and its Save button) always fits on the screen.
+        body = QWidget()
+        body.setObjectName("SettingsBody")
+        body.setLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidget(body)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        lay = _layout(self)
+        lay.addWidget(scroll, 1)
+        lay.addWidget(self.buttons)
+        self.resize(660, 720)
+        for box in self.findChildren(QAbstractSpinBox):  # Fusion ignores stylesheet padding here
+            box.lineEdit().setTextMargins(8, 0, 0, 0)
+        round_popups(self)
 
     @staticmethod
     def _dbl(v, lo, hi, step):
@@ -148,6 +196,7 @@ class SettingsDialog(QDialog):
         s.device = self.device.currentText()
         s.whisper_model = self.whisper.currentData()
         s.theme = self.theme.currentData()
+        s.audio_output = self.output.currentData() or ""
         s.library_dir = self.library.text().strip() or s.library_dir
         s.min_silence_ms = self.min_silence.value()
         s.max_speech_s = self.max_speech.value()
