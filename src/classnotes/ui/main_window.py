@@ -158,6 +158,17 @@ class MainWindow(QMainWindow):
     def _dark(self) -> bool:
         return self.palette().color(QPalette.Window).lightness() < 128
 
+    def apply_theme(self) -> str:
+        """Restyle for the current theme setting (and Windows' scheme when following it)."""
+        from PySide6.QtWidgets import QApplication
+
+        from . import theme
+
+        name = theme.apply(QApplication.instance(), self.settings)
+        if self.record is not None or self.worker is not None:
+            self._render()
+        return name
+
     def _set_record_actions(self, on: bool) -> None:
         for w in (self.export_md_btn, self.export_srt_btn, self.folder_btn, self.reprocess_btn,
                   self.play_btn, self.slider):

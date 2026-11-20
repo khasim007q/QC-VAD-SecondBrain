@@ -37,11 +37,16 @@ def main() -> int:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClassNotes.App")
+    from . import theme
+
     app = QApplication(sys.argv)
     app.setApplicationName("Class Notes")
     app.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.ico"))))
-    app.setStyle("Fusion")
+    app.setStyle("Fusion")  # a neutral base that the stylesheet fully colours
     win = MainWindow()
+    theme.apply(app, win.settings)
+    # "Follow Windows": restyle live when Windows switches between light and dark.
+    app.styleHints().colorSchemeChanged.connect(lambda *_: win.apply_theme())
     win.show()
     return app.exec()
 
