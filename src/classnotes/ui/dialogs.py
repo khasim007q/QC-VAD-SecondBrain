@@ -1,4 +1,4 @@
-"""New class, settings and correction dialogs."""
+"""New class and settings dialogs."""
 
 from __future__ import annotations
 
@@ -6,14 +6,12 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ..settings import Settings
-from ..store import Segment
 
 AUDIO_FILTER = "Audio/video (*.mp3 *.m4a *.wav *.aac *.ogg *.opus *.flac *.wma *.mp4 *.webm *.mkv);;All files (*)"
 
@@ -92,6 +90,10 @@ class SettingsDialog(QDialog):
                             ("large-v3", "Whisper large-v3 (about 2-3x slower)")):
             self.whisper.addItem(label, name)
         self.whisper.setCurrentIndex(max(0, self.whisper.findData(s.whisper_model)))
+        self.theme = QComboBox()
+        for value, label in (("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark")):
+            self.theme.addItem(label, value)
+        self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
         self.library = QLineEdit(s.library_dir)
         self.min_silence = QSpinBox(minimum=100, maximum=3000, singleStep=100, value=s.min_silence_ms)
         self.max_speech = self._dbl(s.max_speech_s, 5, 30, 1)
@@ -113,6 +115,7 @@ class SettingsDialog(QDialog):
         terms_hint.setStyleSheet("color: gray;")
         form.addRow("", terms_hint)
         form.addRow("Library folder", _browse_row(self.library, "Browse...", self._browse))
+        form.addRow("Theme", self.theme)
         form.addRow("Speech model", self.whisper)
         form.addRow("Device", self.device)
         form.addRow("Min. silence between phrases (ms)", self.min_silence)
@@ -144,6 +147,7 @@ class SettingsDialog(QDialog):
         s.terms = self.terms.toPlainText().strip() + "\n"
         s.device = self.device.currentText()
         s.whisper_model = self.whisper.currentData()
+        s.theme = self.theme.currentData()
         s.library_dir = self.library.text().strip() or s.library_dir
         s.min_silence_ms = self.min_silence.value()
         s.max_speech_s = self.max_speech.value()
@@ -151,46 +155,3 @@ class SettingsDialog(QDialog):
         s.min_dur_s = self.min_dur.value()
         s.merge_gap_s = self.merge_gap.value()
         s.merge_max_s = self.merge_max.value()
-
-
-class EditDialog(QDialog):
-    """Correct one English line. The machine translation is kept; this only sets text_edited."""
-
-    def __init__(self, seg: Segment, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Correct translation")
-        self.setMinimumWidth(560)
-        self.seg = seg
-        self.reverted = False
-        lay = QVBoxLayout(self)
-        if seg.lang != "en":
-            lay.addWidget(QLabel("Said (Urdu):"))
-            src = QLabel(seg.source)
-            src.setWordWrap(True)
-            src.setLayoutDirection(Qt.RightToLeft)
-            src.setAlignment(Qt.AlignRight)
-            src.setFont(QFont("Segoe UI", 14))
-            src.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            lay.addWidget(src)
-            lay.addWidget(QLabel(f"Machine translation: {seg.text}"))
-        lay.addWidget(QLabel("Corrected English:"))
-        self.edit = QPlainTextEdit(seg.text_edited or seg.text)
-        lay.addWidget(self.edit)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        revert = buttons.addButton("Revert to machine text", QDialogButtonBox.ResetRole)
-        revert.setEnabled(seg.text_edited is not None)
-        revert.clicked.connect(self._revert)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
-
-    def _revert(self):
-        self.reverted = True
-        self.accept()
-
-    def edited_text(self) -> str | None:
-        """New value for text_edited (None = use machine text)."""
-        if self.reverted:
-            return None
-        t = self.edit.toPlainText().strip()
-        return None if not t or t == self.seg.text else t

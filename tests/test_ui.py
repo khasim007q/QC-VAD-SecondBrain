@@ -1,41 +1,21 @@
 import os
+import time
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from classnotes import store  # noqa: E402
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtMultimedia import QMediaPlayer  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+
+from classnotes import export, store  # noqa: E402
 from classnotes.settings import Settings  # noqa: E402
 from classnotes.store import Segment  # noqa: E402
-from classnotes.ui.segment_view import render_segments_html, segment_at  # noqa: E402
+from classnotes.ui.player import Playback  # noqa: E402
 
+from test_player import FakePlayer  # noqa: E402
 from test_store import make_record  # noqa: E402
-
-
-def test_render_html_escapes_and_marks():
-    segs = [
-        Segment(0, 1, 5, "ur", .9, "اس <آیت>", "In <this> verse"),
-        Segment(1, 6, 9, "en", .9, "Question?", "Question?", text_edited="Edited question?"),
-        Segment(2, 10, 15, "ar", .9, "الحمد لله", ""),
-    ]
-    html = render_segments_html(segs, current_id=1)
-    assert "In &lt;this&gt; verse" in html and "<this>" not in html
-    assert 'dir="rtl"' in html and "اس &lt;آیت&gt;" in html
-    assert 'href="seek:0"' in html and 'href="edit:1"' in html
-    assert "Edited question?" in html and "edited" in html
-    assert "Recitation" in html and "not translated" in html
-    assert 'name="seg-1"' in html
-
-
-def test_render_empty():
-    assert "No speech found" in render_segments_html([], None)
-
-
-def test_segment_at():
-    segs = make_record().segments
-    assert segment_at(segs, 15.0) == 0
-    assert segment_at(segs, 20.7) is None  # in the gap
-    assert segment_at(segs, 22.0) == 1
 
 
 @pytest.fixture(scope="module")
@@ -45,23 +25,36 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-def test_main_window_smoke(qapp, tmp_path):
+def window(qapp, tmp_path, rec=None, with_audio=True, open_it=True):
     from classnotes.ui.main_window import MainWindow
 
-    store.save_record(make_record(), tmp_path)
-    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False)
-    assert win.library.count() == 1
-    win.library.setCurrentRow(0)
+    rec = rec or make_record()
+    if with_audio:
+        audio = tmp_path / "class.mp3"
+        audio.write_bytes(b"x")
+        rec.audio_path = str(audio)
+    store.save_record(rec, tmp_path)
+    fake = FakePlayer()
+    pb = Playback(player=fake, devices=lambda: ([("a", "Speakers")], "a"), set_device=lambda d: None)
+    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False, playback=pb)
+    win._alert = lambda title, msg: win.alerts.append(msg)
+    win.alerts = []
+    win.resize(1280, 800)
+    win.show()
+    win.activateWindow()
     qapp.processEvents()
-    assert win.record is not None
-    assert "In this verse" in win.view.toHtml()
-    assert win.missing_banner.isVisibleTo(win)  # audio path doesn't exist
-    win.close()
+    if open_it:
+        win.open_class(rec.class_id)
+        qapp.processEvents()
+    return win, fake
+
+
+def key(qapp, win, k, mod=Qt.NoModifier):
+    QTest.keyClick(win, k, mod)
+    qapp.processEvents()
 
 
 def _wait_worker(qapp, win, timeout=20):
-    import time
-
     t0 = time.time()
     while win.worker is not None and time.time() - t0 < timeout:
         qapp.processEvents()
@@ -69,17 +62,23 @@ def _wait_worker(qapp, win, timeout=20):
     assert win.worker is None, "worker did not finish"
 
 
-def test_edit_saves_into_the_class_own_library_after_library_change(qapp, tmp_path):
-    from classnotes.ui.main_window import MainWindow
+# ---------- opening and library ----------
+def test_main_window_smoke(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path, with_audio=False)
+    assert win.sidebar.classes.count() == 1
+    assert win.record is not None and "In this verse" in win.lines.lines[0].english.text()
+    assert win.banner.isVisibleTo(win)  # the recording doesn't exist
+    assert win.minimumWidth() >= 1024 and win.minimumHeight() >= 700
+    win.close()
 
+
+def test_edit_saves_into_the_class_own_library_after_library_change(qapp, tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
-    store.save_record(make_record(), a)
+    a.mkdir()
+    win, _ = window(qapp, a)
     other = make_record()
     other.title = "A different class in library B"
     store.save_record(other, b)
-    win = MainWindow(Settings(library_dir=str(a)), persist_settings=False)
-    win.library.setCurrentRow(0)
-    qapp.processEvents()
     win.settings.library_dir = str(b)  # user switched library in Settings
     win.apply_edit(0, "Corrected line")
     assert store.load_record(b / "2026-11-18").title == "A different class in library B"
@@ -87,74 +86,199 @@ def test_edit_saves_into_the_class_own_library_after_library_change(qapp, tmp_pa
     win.close()
 
 
-def test_failed_new_class_resets_header_and_row_can_be_reopened(qapp, tmp_path):
-    from classnotes.ui.main_window import MainWindow
-
-    store.save_record(make_record(), tmp_path)
-    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False)
-    win._alert = lambda title, msg: None
-    win.library.setCurrentRow(0)
-    qapp.processEvents()
+def test_failed_new_class_resets_header_and_class_can_be_reopened(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path, open_it=False)
     win._start(str(tmp_path / "missing.mp3"), "2026-11-19", "New one", None)
     _wait_worker(qapp, win)
-    assert "processing" not in win.header.text()
-    win.library.setCurrentRow(0)  # click the same class again
+    assert "processing" not in win.meta.text()
+    win.sidebar.class_selected.emit("2026-11-18")
     qapp.processEvents()
     assert win.record is not None and win.record.class_id == "2026-11-18"
     win.close()
 
 
 def test_failed_reprocess_reopens_the_class(qapp, tmp_path):
-    from classnotes.ui.main_window import MainWindow
-
-    store.save_record(make_record(), tmp_path)
-    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False)
-    alerts = []
-    win._alert = lambda title, msg: alerts.append(msg)
+    win, _ = window(qapp, tmp_path)
     win._start(str(tmp_path / "missing.mp3"), "2026-11-18", "T", "2026-11-18")
     _wait_worker(qapp, win)
-    assert alerts and "missing.mp3" in alerts[0]
+    assert win.alerts and "missing.mp3" in win.alerts[0]
     assert win.record is not None and win.record.class_id == "2026-11-18"
-    assert "processing" not in win.header.text()
+    assert "processing" not in win.meta.text()
     win.close()
 
 
-def test_moving_to_the_next_segment_does_not_rebuild_the_page(qapp, tmp_path):
-    from classnotes.ui.main_window import MainWindow
-
-    store.save_record(make_record(), tmp_path)
-    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False)
-    win.library.setCurrentRow(0)
-    qapp.processEvents()
-    calls = []
-    real = win.view.setHtml
-    win.view.setHtml = lambda html: (calls.append(1), real(html))
-    win._position_changed(15_000)
-    win._position_changed(22_000)
-    assert calls == []
-    sels = win.view.extraSelections()
-    assert len(sels) == 1 and "What do you think?" in sels[0].cursor.selectedText()
-    win.close()
-
-
-def test_live_segments_are_drawn_in_batches(qapp, tmp_path):
-    import time
-
-    from classnotes.ui.main_window import MainWindow
-
-    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False)
+def test_live_segments_are_appended_without_rebuilding(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path, open_it=False)
     win.worker = object()  # pretend a run is in progress
+    win.lines.set_segments([])
     calls = []
-    real = win.view.setHtml
-    win.view.setHtml = lambda html: (calls.append(1), real(html))
+    real = win.lines.set_segments
+    win.lines.set_segments = lambda s: (calls.append(1), real(s))
     for i in range(50):
         win._on_segment(Segment(i, i, i + 0.5, "en", .9, f"line {i}", f"line {i}"))
-    assert len(calls) <= 1
-    t0 = time.time()
-    while time.time() - t0 < 1.5:
-        qapp.processEvents()
-        time.sleep(0.01)
-    assert 1 <= len(calls) <= 2
-    assert "line 49" in win.view.toPlainText()
+    qapp.processEvents()
+    assert calls == [] and len(win.lines.lines) == 50
     win.worker = None
+    win.close()
+
+
+# ---------- shortcuts ----------
+def test_space_toggles_play_but_types_in_edit_box(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path)
+    key(qapp, win, Qt.Key_Space)
+    assert fake.state == QMediaPlayer.PlayingState
+    key(qapp, win, Qt.Key_Space)
+    assert fake.state == QMediaPlayer.PausedState
+    win.lines.start_edit(0)
+    QTest.keyClick(win.lines.editor, Qt.Key_Space)
+    assert fake.state == QMediaPlayer.PausedState and win.lines.edit_text().endswith(" ")
+    win.close()
+
+
+def test_arrows_r_f_e_shortcuts(qapp, tmp_path):
+    rec = make_record()
+    rec.segments[1].lang_conf = 0.1  # flagged: language unsure
+    win, fake = window(qapp, tmp_path, rec)
+    fake.advance(13_000)
+    key(qapp, win, Qt.Key_Right)
+    assert fake.pos == 21_000
+    key(qapp, win, Qt.Key_Left)
+    assert fake.pos == 12_000
+    fake.advance(15_000)
+    key(qapp, win, Qt.Key_R)
+    assert fake.pos == 12_000 and fake.state == QMediaPlayer.PlayingState
+    key(qapp, win, Qt.Key_F)
+    assert win.lines.playing == 1
+    key(qapp, win, Qt.Key_E)
+    assert win.lines.is_editing() and win.lines._editing == 1
+    win.close()
+
+
+def test_s_and_brackets(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path)
+    key(qapp, win, Qt.Key_S)
+    assert win.bar.stop_btn.isChecked() and win.settings.stop_after_line
+    key(qapp, win, Qt.Key_BracketRight)
+    assert fake.rate == 1.25 and win.settings.playback_rate == 1.25
+    key(qapp, win, Qt.Key_BracketLeft)
+    key(qapp, win, Qt.Key_BracketLeft)
+    assert fake.rate == 0.75
+    win.close()
+
+
+def test_ctrl_k_focuses_search(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path)
+    key(qapp, win, Qt.Key_K, Qt.ControlModifier)
+    assert win.sidebar.search.hasFocus()
+    win.close()
+
+
+def test_shortcuts_are_noops_without_a_class_or_lines(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path, open_it=False)
+    for k in (Qt.Key_Space, Qt.Key_Right, Qt.Key_Left, Qt.Key_R, Qt.Key_E, Qt.Key_F):
+        key(qapp, win, k)
+    assert fake.state == QMediaPlayer.StoppedState
+    empty = make_record("2026-11-19")
+    empty.segments = []
+    store.save_record(empty, tmp_path)
+    win.refresh_library()
+    win.open_class("2026-11-19")
+    for k in (Qt.Key_Right, Qt.Key_Left, Qt.Key_R, Qt.Key_E, Qt.Key_F):
+        key(qapp, win, k)
+    assert not win.lines.is_editing() and win.lines.empty_label.isVisibleTo(win)
+    win.close()
+
+
+# ---------- header, menus, counts ----------
+def test_export_menu_lists_every_format(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path)
+    assert [a.text() for a in win.export_menu.actions()] == [label for _, label, _ in export.FORMATS]
+    win.close()
+
+
+def test_more_menu_has_reprocess_open_folder_locate(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path)
+    assert [a.text() for a in win.more_menu.actions()] == ["Re-process", "Open folder", "Locate recording"]
+    win.close()
+
+
+def test_to_check_count_updates_after_edit_and_looks_fine(qapp, tmp_path):
+    rec = make_record()
+    rec.segments[0].lang_conf = 0.1
+    rec.segments[1].lang_conf = 0.1
+    win, _ = window(qapp, tmp_path, rec)
+    assert "2 to check" in win.meta.text()
+    win.apply_edit(0, "Fixed.")
+    assert "1 to check" in win.meta.text()
+    win.lines.lines[1].looks_fine_btn.click()
+    qapp.processEvents()
+    assert "0 to check" in win.meta.text() and win.record.segments[1].checked
+    assert store.load_record(tmp_path / "2026-11-18").segments[1].checked
+    win.close()
+
+
+def test_missing_recording_disables_player_but_allows_edits(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path, with_audio=False)
+    assert win.banner.isVisibleTo(win) and not win.bar.play_btn.isEnabled()
+    key(qapp, win, Qt.Key_Space)
+    key(qapp, win, Qt.Key_Right)
+    assert fake.state == QMediaPlayer.StoppedState and fake.pos == 0
+    win.apply_edit(0, "Still editable")
+    assert store.load_record(tmp_path / "2026-11-18").segments[0].text_edited == "Still editable"
+    win.close()
+
+
+def test_theme_switch_keeps_edit_and_playing_line(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path)
+    fake.advance(22_000)
+    win.lines.start_edit(1)
+    QTest.keyClicks(win.lines.editor, " typed")
+    win.settings.theme = "dark"
+    assert win.apply_theme() == "dark"
+    assert win.lines.is_editing() and win.lines.edit_text().endswith(" typed") and win.lines.playing == 1
+    win.settings.theme = "light"
+    win.apply_theme()
+    win.close()
+
+
+def test_settings_dialog_theme_round_trip(qapp):
+    from classnotes.ui.dialogs import SettingsDialog
+
+    s = Settings(theme="dark")
+    dlg = SettingsDialog(s)
+    assert dlg.theme.currentData() == "dark"
+    dlg.theme.setCurrentIndex(dlg.theme.findData("system"))
+    dlg.apply(s)
+    assert s.theme == "system"
+
+
+# ---------- playback wiring ----------
+def test_clicking_a_line_plays_from_its_start(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path)
+    QTest.mouseClick(win.lines.lines[1], Qt.LeftButton, pos=QPoint(20, 10))
+    qapp.processEvents()
+    assert fake.pos == 21_000 and fake.state == QMediaPlayer.PlayingState
+    win.close()
+
+
+def test_search_result_opens_line_without_playing(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path, open_it=False)
+    win.sidebar.hit_selected.emit("2026-11-18", 1)
+    qapp.processEvents()
+    assert win.record.class_id == "2026-11-18" and win.lines.playing == 1
+    assert fake.pos == 21_000 and fake.state != QMediaPlayer.PlayingState
+    win.close()
+
+
+def test_editing_pauses_and_save_resumes(qapp, tmp_path):
+    win, fake = window(qapp, tmp_path)
+    fake.advance(13_000)
+    win.playback.play()
+    key(qapp, win, Qt.Key_E)
+    assert fake.state == QMediaPlayer.PausedState
+    QTest.keyClick(win.lines.editor, Qt.Key_Return)
+    assert fake.state == QMediaPlayer.PlayingState
+    key(qapp, win, Qt.Key_E)
+    QTest.keyClick(win.lines.editor, Qt.Key_Escape)
+    assert fake.state == QMediaPlayer.PlayingState
     win.close()

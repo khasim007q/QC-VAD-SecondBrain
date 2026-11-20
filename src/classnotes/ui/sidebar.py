@@ -41,6 +41,7 @@ class Sidebar(QWidget):
         self.search.setObjectName("Search")
         self.search.setPlaceholderText("Search all classes   Ctrl+K")
         self.search.setClearButtonEnabled(True)
+        self.search.setFocusPolicy(Qt.ClickFocus)  # never grabs focus on its own (Ctrl+K or a click)
         self.search.installEventFilter(self)
         self._timer = QTimer(self, singleShot=True, interval=SEARCH_DELAY_MS, timeout=self.flush_search)
         self.search.textChanged.connect(lambda _t: self._timer.start())

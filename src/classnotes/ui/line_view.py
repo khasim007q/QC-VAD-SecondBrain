@@ -209,6 +209,15 @@ class LineList(QScrollArea):
         self.setUpdatesEnabled(True)
         self._set_following(True)
 
+    def append_segment(self, seg: Segment) -> None:
+        """Add one line at the end (while a class is being processed) without rebuilding."""
+        self.segments.append(seg)
+        w = LineWidget(seg, self)
+        w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.lines[seg.id] = w
+        self.layout_.insertWidget(self.layout_.indexOf(self.empty_label), w)
+        self.empty_label.hide()
+
     def update_segment(self, seg_id: int) -> None:
         w = self.lines.get(seg_id)
         if w is not None:
@@ -325,3 +334,4 @@ class LineList(QScrollArea):
             self.editor = None
         if w is not None:
             w.refresh()
+        self.setFocus()  # back to listening: shortcuts work again

@@ -1,209 +1,239 @@
-"""Main window: class library, audio player, segment list, processing panel."""
+"""Main window: sidebar (search, classes), header, the list of lines, and the player bar.
+
+Built for listening straight through and stopping to fix lines (docs/superpowers/specs/
+2026-11-20-review-screen-design.md).
+"""
 
 from __future__ import annotations
 
 import os
+from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QPalette, QTextCharFormat, QTextCursor
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QSlider, QSplitter, QStyle,
-    QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QPlainTextEdit, QProgressBar, QPushButton, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from .. import models, store
+from .. import export, flags, models, store
 from ..settings import Settings
-from .dialogs import AUDIO_FILTER, EditDialog, NewClassDialog, SettingsDialog
-from .segment_view import DARK, LIGHT, render_segments_html, segment_at
+from . import theme
+from .dialogs import AUDIO_FILTER, NewClassDialog, SettingsDialog
+from .line_view import LineList
+from .player import Playback, PlayerBar, step_rate
+from .sidebar import Sidebar
 from .worker import ProcessWorker
 
-LIVE_REDRAW_MS = 700
+WELCOME = ("Add a class and choose its recording. Urdu is translated to English line by line, the "
+           "teacher's English is kept as spoken, and Quran recitation is marked, not translated.\n\n"
+           "Click a line to hear it. Press E to fix the line that is playing; the machine version is "
+           "always kept.")
+
+
+def _button(text: str, kind: str = "secondary") -> QPushButton:
+    b = QPushButton(text)
+    b.setProperty("kind", kind)
+    b.setCursor(Qt.PointingHandCursor)
+    return b
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: Settings | None = None, persist_settings: bool = True):
+    def __init__(self, settings: Settings | None = None, persist_settings: bool = True,
+                 playback: Playback | None = None):
         super().__init__()
         self.settings = settings or Settings.load()
         self.persist = persist_settings
         self.record: store.ClassRecord | None = None
         self.record_lib: Path | None = None  # library the open class lives in
-        self._reprocess_id: str | None = None
         self.worker: ProcessWorker | None = None
         self.live_segments: list[store.Segment] = []
         self.current_id: int | None = None
-        self._dragging = False
+        self._reprocess_id: str | None = None
+        self._resume_after_edit = False
+        self.playback = playback or Playback(self)
+        if playback is not None:
+            playback.setParent(self)
 
         self.setWindowTitle("Class Notes")
-        self.resize(1180, 760)
+        self.setMinimumSize(1024, 700)
+        self.resize(1280, 820)
         self._build()
+        self._wire()
+        self._shortcuts()
         self.refresh_library()
 
-    # ---------- layout ----------
+    # ================= layout =================
     def _build(self) -> None:
-        # Sidebar
-        self.library = QListWidget()
-        self.library.currentRowChanged.connect(self._open_selected)
-        self.library.setStyleSheet(
-            "QListWidget::item { padding: 7px 6px; border-bottom: 1px solid palette(midlight); }"
-            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }")
-        self.new_btn = QPushButton("+  New class")
-        self.new_btn.setDefault(True)
-        self.new_btn.clicked.connect(self.new_class)
-        self.settings_btn = QPushButton("Glossary && settings")
-        self.settings_btn.clicked.connect(self.open_settings)
-        side = QWidget()
-        sl = QVBoxLayout(side)
-        sl.addWidget(self.new_btn)
-        sl.addWidget(self.library, 1)
-        sl.addWidget(self.settings_btn)
+        self.sidebar = Sidebar()
 
-        # Header + missing-audio banner
-        self.header = QLabel()
-        self.header.setTextFormat(Qt.RichText)
-        self.header.setWordWrap(True)
-        self.missing_banner = QFrame()
-        self.missing_banner.setStyleSheet(
-            "QFrame { background: #fff1e5; border: 1px solid #f0b37e; border-radius: 4px; }"
-            "QLabel { color: #7a3e00; border: none; }")
-        bl = QHBoxLayout(self.missing_banner)
-        self.missing_label = QLabel("The recording for this class was moved or deleted.")
-        locate = QPushButton("Locate recording...")
+        # header
+        self.title = QLabel("Class Notes")
+        self.title.setObjectName("Title")
+        self.meta = QLabel("")
+        self.meta.setObjectName("Meta")
+        words = QVBoxLayout()
+        words.setSpacing(4)
+        words.addWidget(self.title)
+        words.addWidget(self.meta)
+        self.next_flag_btn = _button("Next line to check   F")
+        self.export_btn = _button("Export")
+        self.export_menu = QMenu(self)
+        for kind, label, _ext in export.FORMATS:
+            self.export_menu.addAction(label, lambda k=kind: self.export(k))
+        self.export_btn.setMenu(self.export_menu)
+        self.more_btn = _button("More")
+        self.more_menu = QMenu(self)
+        self.more_menu.addAction("Re-process", self.reprocess)
+        self.more_menu.addAction("Open folder", self.open_folder)
+        self.more_menu.addAction("Locate recording", self.locate_audio)
+        self.more_btn.setMenu(self.more_menu)
+        header = QFrame()
+        header.setObjectName("Header")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(48, 24, 48, 16)
+        hl.setSpacing(12)
+        hl.addLayout(words, 1)
+        for b in (self.next_flag_btn, self.export_btn, self.more_btn):
+            hl.addWidget(b)
+
+        # phase 2 slot: "use this word from now on" suggestions
+        self.notice = QFrame()
+        self.notice.setObjectName("Notice")
+        self.notice.hide()
+
+        # missing recording
+        self.banner = QFrame()
+        self.banner.setObjectName("Banner")
+        bl = QHBoxLayout(self.banner)
+        bl.setContentsMargins(16, 8, 8, 8)
+        bl.addWidget(QLabel("The recording for this class was moved or deleted."), 1)
+        locate = _button("Locate recording")
         locate.clicked.connect(self.locate_audio)
-        bl.addWidget(self.missing_label, 1)
         bl.addWidget(locate)
-        self.missing_banner.hide()
+        self.banner.hide()
 
-        # Player
-        self.player = QMediaPlayer(self)
-        self.audio_out = QAudioOutput(self)
-        self.player.setAudioOutput(self.audio_out)
-        self.player.positionChanged.connect(self._position_changed)
-        self.player.durationChanged.connect(lambda d: self.slider.setRange(0, d))
-        self.player.playbackStateChanged.connect(self._update_play_icon)
-        self.play_btn = QPushButton()
-        self.play_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.play_btn.clicked.connect(self.toggle_play)
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.sliderPressed.connect(lambda: setattr(self, "_dragging", True))
-        self.slider.sliderReleased.connect(self._slider_released)
-        self.time_label = QLabel("00:00 / 00:00")
-        self.follow = QCheckBox("Follow playback")
-        self.follow.setChecked(True)
-        player_row = QHBoxLayout()
-        player_row.addWidget(self.play_btn)
-        player_row.addWidget(self.slider, 1)
-        player_row.addWidget(self.time_label)
-        player_row.addWidget(self.follow)
-
-        # Processing panel
+        # processing
         self.proc_panel = QFrame()
         pl = QHBoxLayout(self.proc_panel)
-        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setContentsMargins(48, 8, 48, 8)
         self.proc_status = QLabel()
+        self.proc_status.setObjectName("Meta")
         self.proc_bar = QProgressBar()
         self.proc_bar.setRange(0, 1000)
         self.proc_bar.setTextVisible(False)
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = _button("Cancel")
         self.cancel_btn.clicked.connect(self.cancel_processing)
         pl.addWidget(self.proc_status, 2)
         pl.addWidget(self.proc_bar, 3)
         pl.addWidget(self.cancel_btn)
         self.proc_panel.hide()
 
-        # Segments
-        self.view = QTextBrowser()
-        self.view.setOpenLinks(False)
-        self.view.anchorClicked.connect(self._on_link)
-        self._live_timer = QTimer(self)
-        self._live_timer.setSingleShot(True)
-        self._live_timer.setInterval(LIVE_REDRAW_MS)
-        self._live_timer.timeout.connect(lambda: self._render(stick_bottom=True))
+        # lines / welcome
+        self.lines = LineList()
+        self.welcome = QLabel(WELCOME)
+        self.welcome.setObjectName("Empty")
+        self.welcome.setWordWrap(True)
+        self.welcome.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.welcome.setContentsMargins(48, 32, 48, 32)
+        self.welcome.setMaximumWidth(760)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.welcome)
+        self.stack.addWidget(self.lines)
 
-        # Actions
-        self.export_md_btn = QPushButton("Export notes.md")
-        self.export_md_btn.clicked.connect(lambda: self.export("md"))
-        self.export_srt_btn = QPushButton("Export .srt")
-        self.export_srt_btn.clicked.connect(lambda: self.export("srt"))
-        self.folder_btn = QPushButton("Open folder")
-        self.folder_btn.clicked.connect(self.open_folder)
-        self.reprocess_btn = QPushButton("Re-process")
-        self.reprocess_btn.clicked.connect(self.reprocess)
-        actions = QHBoxLayout()
-        for b in (self.export_md_btn, self.export_srt_btn, self.folder_btn):
-            actions.addWidget(b)
-        actions.addStretch(1)
-        actions.addWidget(self.reprocess_btn)
+        self.bar = PlayerBar()
+
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addWidget(header)
+        for w in (self.notice, self.banner):
+            wrap = QHBoxLayout()
+            wrap.setContentsMargins(48, 12, 48, 0)
+            wrap.addWidget(w)
+            rl.addLayout(wrap)
+        rl.addWidget(self.proc_panel)
+        rl.addWidget(self.stack, 1)
+        rl.addWidget(self.bar)
 
         main = QWidget()
-        ml = QVBoxLayout(main)
-        ml.addWidget(self.header)
-        ml.addWidget(self.missing_banner)
-        ml.addLayout(player_row)
-        ml.addWidget(self.proc_panel)
-        ml.addWidget(self.view, 1)
-        ml.addLayout(actions)
-
-        split = QSplitter()
-        split.addWidget(side)
-        split.addWidget(main)
-        split.setStretchFactor(1, 1)
-        split.setSizes([260, 920])
-        self.setCentralWidget(split)
-        self._set_record_actions(False)
+        main.setObjectName("Main")
+        ml = QHBoxLayout(main)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+        ml.addWidget(self.sidebar)
+        ml.addWidget(right, 1)
+        self.setCentralWidget(main)
         self._show_welcome()
 
-    def _dark(self) -> bool:
-        return self.palette().color(QPalette.Window).lightness() < 128
+    def _wire(self) -> None:
+        sb, ln, pb, bar = self.sidebar, self.lines, self.playback, self.bar
+        sb.class_selected.connect(self.open_class)
+        sb.hit_selected.connect(self.open_hit)
+        sb.add_button.clicked.connect(self.new_class)
+        sb.settings_button.clicked.connect(self.open_settings)
+        ln.seek_requested.connect(self._line_clicked)
+        ln.edit_started.connect(self._edit_started)
+        ln.edit_saved.connect(self._edit_saved)
+        ln.edit_cancelled.connect(lambda _id: self._resume())
+        ln.marked_checked.connect(self.mark_checked)
+        pb.line_changed.connect(self._line_changed)
+        pb.position.connect(self._position)
+        pb.playing_changed.connect(bar.set_playing)
+        pb.status.connect(lambda m: self.statusBar().showMessage(m, 10000))
+        pb.error.connect(lambda m: self.statusBar().showMessage(f"{m} Try another output.", 15000))
+        bar.play_clicked.connect(pb.toggle)
+        bar.prev_clicked.connect(pb.prev_line)
+        bar.next_clicked.connect(pb.next_line)
+        bar.replay_clicked.connect(pb.replay_line)
+        bar.seek_requested.connect(pb.seek_ms)
+        bar.stop_after_toggled.connect(self.set_stop_after)
+        bar.rate_chosen.connect(self.set_rate)
+        bar.output_chosen.connect(self.set_output)
+        self.next_flag_btn.clicked.connect(self.next_flagged)
 
-    def apply_theme(self) -> str:
-        """Restyle for the current theme setting (and Windows' scheme when following it)."""
-        from PySide6.QtWidgets import QApplication
+        pb.set_rate(self.settings.playback_rate)
+        bar.set_rate(self.settings.playback_rate)
+        pb.set_stop_after_line(self.settings.stop_after_line)
+        bar.set_stop_after(self.settings.stop_after_line)
+        pb.set_output(self.settings.audio_output)
+        bar.set_outputs(pb.outputs(), self.settings.audio_output)
 
-        from . import theme
+    def _shortcuts(self) -> None:
+        keys = {
+            "Space": self.playback.toggle, "Left": self.playback.prev_line, "Right": self.playback.next_line,
+            "R": self.playback.replay_line, "S": lambda: self.set_stop_after(not self.settings.stop_after_line),
+            "E": self.edit_playing_line, "F": self.next_flagged,
+            "[": lambda: self.set_rate(step_rate(self.settings.playback_rate, -1)),
+            "]": lambda: self.set_rate(step_rate(self.settings.playback_rate, 1)),
+        }
+        for seq, fn in keys.items():
+            QShortcut(QKeySequence(seq), self, activated=lambda fn=fn: self._guarded(fn))
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.sidebar.focus_search)
 
-        name = theme.apply(QApplication.instance(), self.settings)
-        if self.record is not None or self.worker is not None:
-            self._render()
-        return name
+    def _guarded(self, fn) -> None:
+        """Run a listening shortcut only when a class with lines is open and nobody is typing."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)) or self.lines.is_editing():
+            return
+        if self.record is None or self.worker is not None or not self.record.segments:
+            return
+        fn()
 
-    def _set_record_actions(self, on: bool) -> None:
-        for w in (self.export_md_btn, self.export_srt_btn, self.folder_btn, self.reprocess_btn,
-                  self.play_btn, self.slider):
-            w.setEnabled(on)
-
-    def _show_welcome(self) -> None:
-        self.header.setText("<h2>Class Notes</h2>")
-        self.view.setHtml(
-            "<p>Click <b>+ New class</b> and choose a recording. Urdu is translated to English "
-            "line by line, the teacher's English is kept exactly as spoken, and Quran recitation "
-            "is marked but not translated.</p><p>Click a time to hear that moment. "
-            "Click ✎ to correct a translation (the machine version is always kept).</p>")
-
-    # ---------- library ----------
+    # ================= library =================
     def library_dir(self) -> Path:
         return Path(self.settings.library_dir)
 
     def refresh_library(self, select_id: str | None = None) -> None:
-        self.library.blockSignals(True)
-        self.library.clear()
-        for rec in store.list_library(self.library_dir()):
-            label = f"{rec.date}\n{rec.title or rec.class_id}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, rec.class_id)
-            self.library.addItem(item)
-            if rec.class_id == select_id:
-                self.library.setCurrentItem(item)
-        self.library.blockSignals(False)
+        self.sidebar.set_records(store.list_library(self.library_dir()))
         if select_id:
-            self._open_selected(self.library.currentRow())
+            self.open_class(select_id)
 
-    def _open_selected(self, row: int) -> None:
-        if row < 0:
+    def open_class(self, class_id: str) -> None:
+        if self.worker is not None:
             return
-        class_id = self.library.item(row).data(Qt.UserRole)
         try:
             rec = store.load_record(store.class_dir(self.library_dir(), class_id))
         except (OSError, ValueError) as e:
@@ -211,130 +241,145 @@ class MainWindow(QMainWindow):
             return
         self.show_record(rec, self.library_dir())
 
+    def open_hit(self, class_id: str, seg_id: int) -> None:
+        if self.record is None or self.record.class_id != class_id:
+            self.open_class(class_id)
+        if self.record is None or seg_id < 0:
+            return
+        seg = self._seg(seg_id)
+        if seg is not None:
+            self.current_id = seg_id
+            self.lines.set_playing(seg_id)
+            self.lines.scroll_to(seg_id)
+            self.playback.seek_ms(int(seg.start * 1000))
+
     def show_record(self, rec: store.ClassRecord, library: Path | None = None) -> None:
         self.record = rec
         if library is not None:
             self.record_lib = Path(library)
         self.current_id = None
-        n = len(rec.segments)
-        self.header.setText(
-            f"<h2 style='margin:0'>{_esc(rec.title or rec.class_id)}</h2>"
-            f"<span style='color:gray'>{rec.date} · {store.fmt_clock(rec.duration_s)} · {n} segments · "
-            f"{_esc(Path(rec.audio_path).name)}</span>")
-        self.player.stop()
+        self.title.setText(rec.title or rec.class_id)
         audio_ok = Path(rec.audio_path).is_file()
-        self.missing_banner.setVisible(not audio_ok)
-        self.player.setSource(QUrl.fromLocalFile(rec.audio_path) if audio_ok else QUrl())
+        self.banner.setVisible(not audio_ok)
+        self.playback.set_segments(rec.segments)
+        self.playback.set_source(rec.audio_path if audio_ok else None)
+        self.bar.set_controls_enabled(audio_ok)
+        self.bar.set_position(0, int(rec.duration_s * 1000))
+        self.lines.set_segments(rec.segments)
+        self.stack.setCurrentWidget(self.lines)
+        self.sidebar.select_class(rec.class_id)
         self._set_record_actions(True)
-        self.play_btn.setEnabled(audio_ok)
-        self.slider.setEnabled(audio_ok)
-        self._render(keep_scroll=False)
+        self._refresh_counts()
+        self.lines.setFocus()  # so Space and the arrows work straight away
 
-    def _segments(self) -> list[store.Segment]:
-        if self.worker is not None:
-            return self.live_segments
-        return self.record.segments if self.record else []
-
-    def _render(self, keep_scroll: bool = True, stick_bottom: bool = False) -> None:
-        """Rebuild the whole list (~70 ms for a long class): only when content changes."""
-        sb = self.view.verticalScrollBar()
-        at_bottom = sb.value() >= sb.maximum() - 4
-        pos = sb.value()
-        segs = self._segments()
-        self.view.setHtml(render_segments_html(segs, None, self._dark()))
-        # Each segment is one table, in order: remember where each starts and ends.
-        frames = self.view.document().rootFrame().childFrames()
-        self._seg_ranges = {}
-        if len(frames) == len(segs):
-            self._seg_ranges = {s.id: (f.firstPosition(), f.lastPosition())
-                                for s, f in zip(segs, frames)}
-        self._apply_highlight()
-        if stick_bottom and at_bottom:
-            sb.setValue(sb.maximum())
-        elif keep_scroll:
-            sb.setValue(pos)
-
-    def _apply_highlight(self) -> None:
-        """Colour the playing segment with an overlay: no page rebuild (well under 1 ms)."""
-        rng = getattr(self, "_seg_ranges", {}).get(self.current_id)
-        if rng is None:
-            self.view.setExtraSelections([])
+    def _refresh_counts(self) -> None:
+        rec = self.record
+        if rec is None:
             return
-        cur = QTextCursor(self.view.document())
-        cur.setPosition(rng[0])
-        cur.setPosition(rng[1], QTextCursor.KeepAnchor)
-        sel = QTextEdit.ExtraSelection()
-        fmt = QTextCharFormat()
-        fmt.setBackground(QColor(DARK["hl"] if self._dark() else LIGHT["hl"]))
-        sel.format = fmt
-        sel.cursor = cur
-        self.view.setExtraSelections([sel])
+        flagged = flags.flagged_ids(rec.segments)
+        self.meta.setText(f"{rec.date} · {store.fmt_clock(rec.duration_s)} · {len(rec.segments)} lines · "
+                          f"{len(flagged)} to check")
+        self.next_flag_btn.setEnabled(bool(flagged))
+        starts = [s.start for s in rec.segments if s.id in set(flagged)]
+        self.bar.set_flags(starts, rec.duration_s)
 
-    # ---------- links / playback ----------
-    def _on_link(self, url: QUrl) -> None:
-        kind, _, value = url.toString().partition(":")
-        if not value.isdigit() or self.record is None:
+    def _set_record_actions(self, on: bool) -> None:
+        for w in (self.export_btn, self.more_btn, self.next_flag_btn):
+            w.setEnabled(on)
+
+    def _show_welcome(self, heading: str = "Class Notes") -> None:
+        self.title.setText(heading)
+        self.meta.setText("")
+        self.stack.setCurrentWidget(self.welcome)
+        self._set_record_actions(False)
+        self.bar.set_controls_enabled(False)
+
+    def _seg(self, seg_id: int) -> store.Segment | None:
+        segs = self.live_segments if self.worker is not None else (self.record.segments if self.record else [])
+        return next((s for s in segs if s.id == seg_id), None)
+
+    # ================= playback =================
+    def _line_clicked(self, seg_id: int) -> None:
+        self.current_id = seg_id
+        self.lines.set_playing(seg_id)
+        self.lines.scroll_to(seg_id)
+        self.playback.play_segment(seg_id)
+
+    def _line_changed(self, seg_id) -> None:
+        self.current_id = seg_id
+        self.lines.set_playing(seg_id)
+
+    def _position(self, ms: int) -> None:
+        if self.record is not None:
+            self.bar.set_position(ms, int(self.record.duration_s * 1000))
+
+    def set_rate(self, rate: float) -> None:
+        self.settings.playback_rate = rate
+        self.playback.set_rate(rate)
+        self.bar.set_rate(rate)
+        self._persist()
+
+    def set_stop_after(self, on: bool) -> None:
+        self.settings.stop_after_line = on
+        self.playback.set_stop_after_line(on)
+        self.bar.set_stop_after(on)
+        self._persist()
+
+    def set_output(self, device_id: str) -> None:
+        self.settings.audio_output = device_id
+        self.playback.set_output(device_id)
+        self._persist()
+
+    def next_flagged(self) -> None:
+        if self.record is None:
             return
-        seg_id = int(value)
-        if kind == "seek":
-            self.seek_to(seg_id)
-        elif kind == "edit":
-            self.edit_segment(seg_id)
+        seg_id = flags.next_flagged(self.record.segments, self.current_id)
+        seg = self._seg(seg_id) if seg_id is not None else None
+        if seg is not None:
+            self.current_id = seg_id
+            self.lines.set_playing(seg_id)
+            self.lines.scroll_to(seg_id)
+            self.playback.seek_ms(int(seg.start * 1000))
 
-    def _seg_by_id(self, seg_id: int) -> store.Segment | None:
-        return next((s for s in self._segments() if s.id == seg_id), None)
+    # ================= editing =================
+    def edit_playing_line(self) -> None:
+        target = self.current_id
+        if target is None and self.record and self.record.segments:
+            target = self.record.segments[0].id
+        if target is not None:
+            self.lines.scroll_to(target)
+            self.lines.start_edit(target)
 
-    def seek_to(self, seg_id: int) -> None:
-        seg = self._seg_by_id(seg_id)
-        if seg is None or self.player.source().isEmpty():
-            return
-        self.player.setPosition(int(seg.start * 1000))
-        self.player.play()
+    def _edit_started(self, _seg_id: int) -> None:
+        self._resume_after_edit = self.playback.is_playing()
+        self.playback.pause()
 
-    def toggle_play(self) -> None:
-        if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.player.pause()
-        else:
-            self.player.play()
+    def _edit_saved(self, seg_id: int, text) -> None:
+        self.apply_edit(seg_id, text)
+        self._resume()
 
-    def _update_play_icon(self, state) -> None:
-        icon = QStyle.SP_MediaPause if state == QMediaPlayer.PlayingState else QStyle.SP_MediaPlay
-        self.play_btn.setIcon(self.style().standardIcon(icon))
-
-    def _slider_released(self) -> None:
-        self._dragging = False
-        self.player.setPosition(self.slider.value())
-
-    def _position_changed(self, ms: int) -> None:
-        if not self._dragging:
-            self.slider.setValue(ms)
-        self.time_label.setText(
-            f"{store.fmt_clock(ms / 1000)} / {store.fmt_clock(self.player.duration() / 1000)}")
-        segs = self._segments()
-        idx = segment_at(segs, ms / 1000)
-        new_id = segs[idx].id if idx is not None else self.current_id
-        if new_id != self.current_id:
-            self.current_id = new_id
-            self._apply_highlight()
-            if self.follow.isChecked() and new_id is not None:
-                self.view.scrollToAnchor(f"seg-{new_id}")
-
-    # ---------- editing ----------
-    def edit_segment(self, seg_id: int) -> None:
-        seg = self._seg_by_id(seg_id)
-        if seg is None or seg.lang == "ar" or self.worker is not None:
-            return
-        dlg = EditDialog(seg, self)
-        if dlg.exec():
-            self.apply_edit(seg_id, dlg.edited_text())
+    def _resume(self) -> None:
+        if self._resume_after_edit:
+            self._resume_after_edit = False
+            self.playback.play()
 
     def apply_edit(self, seg_id: int, text: str | None) -> None:
-        seg = self._seg_by_id(seg_id)
+        seg = self._seg(seg_id)
         if seg is None or self.record is None:
             return
         seg.text_edited = text
         self._save_current()
-        self._render()
+        self.lines.update_segment(seg_id)
+        self._refresh_counts()
+
+    def mark_checked(self, seg_id: int) -> None:
+        seg = self._seg(seg_id)
+        if seg is None or self.record is None:
+            return
+        seg.checked = True
+        self._save_current()
+        self.lines.update_segment(seg_id)
+        self._refresh_counts()
 
     def _save_current(self) -> bool:
         """Save the open class into the library it was opened from (not today's setting)."""
@@ -357,7 +402,7 @@ class MainWindow(QMainWindow):
             self._save_current()
             self.show_record(self.record)
 
-    # ---------- processing ----------
+    # ================= processing =================
     def new_class(self) -> None:
         dlg = NewClassDialog(self)
         if dlg.exec():
@@ -379,23 +424,24 @@ class MainWindow(QMainWindow):
             self._start(rec.audio_path, rec.date, rec.title, rec.class_id)
 
     def _start(self, path: str, day: str, title: str, class_id: str | None) -> None:
-        self.player.stop()
+        self.playback.pause()
+        self.playback.set_source(None)
         self.record = None
         self._reprocess_id = class_id
         self.live_segments = []
         self.current_id = None
-        self.header.setText(f"<h2 style='margin:0'>{_esc(title)}</h2>"
-                            f"<span style='color:gray'>{day} · processing…</span>")
-        self.missing_banner.hide()
+        self.title.setText(title)
+        self.meta.setText(f"{day} · processing…")
+        self.banner.hide()
         self._set_record_actions(False)
-        self.new_btn.setEnabled(False)
-        self.settings_btn.setEnabled(False)
-        self.library.setEnabled(False)
+        self.bar.set_controls_enabled(False)
+        self.sidebar.setEnabled(False)
         self.proc_panel.show()
         self.cancel_btn.setEnabled(True)
         self.proc_bar.setValue(0)
         self.proc_status.setText("Starting…")
-        self.view.setHtml("<p style='color:gray'>Segments appear here as they are processed.</p>")
+        self.lines.set_segments([])
+        self.stack.setCurrentWidget(self.lines)
 
         self.worker = ProcessWorker(path, title, day, self.settings, class_id, self)
         self.worker.status.connect(self.proc_status.setText)
@@ -412,10 +458,8 @@ class MainWindow(QMainWindow):
         self.proc_bar.setValue(int(frac * 1000))
 
     def _on_segment(self, seg: store.Segment) -> None:
-        # Segments arrive in bursts; redraw at most every LIVE_REDRAW_MS, not per segment.
         self.live_segments.append(seg)
-        if not self._live_timer.isActive():
-            self._live_timer.start()
+        self.lines.append_segment(seg)
 
     def _on_done(self, rec: store.ClassRecord) -> None:
         self._finish(None)
@@ -426,61 +470,71 @@ class MainWindow(QMainWindow):
         self._alert("Processing failed", msg)
 
     def _finish(self, message: str | None, reopen_id: str | None = None) -> None:
-        if self.worker is not None:
+        if self.worker is not None and hasattr(self.worker, "wait"):
             self.worker.wait()
             self.worker.deleteLater()
         self.worker = None
         self._reprocess_id = None
-        self._live_timer.stop()
         self.proc_panel.hide()
-        self.new_btn.setEnabled(True)
-        self.settings_btn.setEnabled(True)
-        self.library.setEnabled(True)
-        # Clear the selection so clicking the previously selected class opens it again.
-        self.library.blockSignals(True)
-        self.library.setCurrentRow(-1)
-        self.library.blockSignals(False)
+        self.sidebar.setEnabled(True)
+        self.sidebar.select_class(None)
         if reopen_id:  # a re-process that didn't finish: the class is unchanged, show it again
             self.refresh_library(select_id=reopen_id)
         if self.record is None and message:
-            self._show_welcome()
-            self.header.setText(f"<h2>{_esc(message)}</h2>")
+            self._show_welcome(message)
 
     def cancel_processing(self) -> None:
         if self.worker is not None:
             self.worker.cancel()
             models.kill_active()  # a first-time model conversion stops at once
             self.cancel_btn.setEnabled(False)
-            self.proc_status.setText("Cancelling after the current phrase…")
+            self.proc_status.setText("Cancelling after the current batch…")
 
-    # ---------- misc ----------
+    # ================= misc =================
+    def apply_theme(self) -> str:
+        """Restyle for the theme setting (and Windows' scheme when following it). Keeps everything
+        on screen, including an edit in progress."""
+        name = theme.apply(QApplication.instance(), self.settings)
+        self.bar.refresh_icons()
+        return name
+
     def open_settings(self) -> None:
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
             old_lib = self.library_dir()
             dlg.apply(self.settings)
-            if self.persist:
-                self.settings.save()
+            self._persist()
             if self.library_dir() != old_lib and self.record is not None:
                 # The open class belongs to the old library: close it rather than mix the two.
-                self.player.stop()
+                self.playback.set_source(None)
                 self.record, self.record_lib = None, None
-                self._set_record_actions(False)
-                self.missing_banner.hide()
+                self.banner.hide()
                 self._show_welcome()
+            self.apply_theme()
             self.refresh_library()
+
+    def _persist(self) -> None:
+        if self.persist:
+            try:
+                self.settings.save()
+            except OSError:
+                pass
 
     def export(self, kind: str) -> None:
         rec = self.record
         if rec is None:
             return
-        if kind == "md":
-            name, text, filt = f"{rec.class_id}-notes.md", store.render_notes_md(rec), "Markdown (*.md)"
-        else:
-            name, text, filt = f"{rec.class_id}.srt", store.render_srt(rec), "Subtitles (*.srt)"
-        f, _ = QFileDialog.getSaveFileName(self, "Export", str(Path.home() / "Documents" / name), filt)
-        if f:
-            Path(f).write_text(text, "utf-8")
+        label, ext = next((lab, e) for k, lab, e in export.FORMATS if k == kind)
+        start = Path.home() / "Documents" / export.default_name(rec, ext)
+        f, _ = QFileDialog.getSaveFileName(self, f"Export {label.lower()}", str(start), f"{label} (*{ext})")
+        if not f:
+            return
+        try:
+            export.export(rec, kind, Path(f))
+        except OSError as e:
+            self._alert("Could not export", str(e))
+            return
+        self.statusBar().showMessage(f"Saved {Path(f).name}", 8000)
 
     def open_folder(self) -> None:
         if self.record is not None:
@@ -488,7 +542,7 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def closeEvent(self, event) -> None:
-        if self.worker is not None:
+        if self.worker is not None and hasattr(self.worker, "wait"):
             ok = QMessageBox.question(self, "Processing", "A recording is still processing. Stop and quit?")
             if ok != QMessageBox.Yes:
                 event.ignore()
@@ -498,13 +552,11 @@ class MainWindow(QMainWindow):
             if not self.worker.wait(30000):
                 # Stuck in a download or a GPU call that can't be interrupted. Nothing is saved
                 # for a cancelled run, so leave right away instead of crashing on exit.
-                self.player.stop()
+                self.playback.pause()
                 os._exit(0)
-        self.player.stop()
+        self.playback.pause()
         event.accept()
 
 
 def _esc(s: str) -> str:
-    from html import escape
-
     return escape(s or "")
