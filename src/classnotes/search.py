@@ -66,6 +66,15 @@ class SearchIndex:
         self._records = records
         self._norm: dict[tuple[int, int, str], tuple[str, list[int]]] = {}
 
+    def replace(self, rec: ClassRecord) -> None:
+        """Swap in the current version of a class (after edits) and forget its cached text."""
+        for r, old in enumerate(self._records):
+            if old.class_id == rec.class_id:
+                self._records[r] = rec
+                self._norm = {k: v for k, v in self._norm.items() if k[0] != r}
+                return
+        self._records.append(rec)
+
     def _find(self, key, text: str, q: str):
         if key not in self._norm:
             self._norm[key] = _normalize_map(text)

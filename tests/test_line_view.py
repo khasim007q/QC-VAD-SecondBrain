@@ -36,14 +36,30 @@ def make(qapp, data=None):
 
 
 def test_800_lines_open_in_under_a_second(qapp):
-    data = segs(800)
+    from classnotes.settings import Settings
+    from classnotes.ui import theme
+
+    theme.apply(qapp, Settings(theme="light"))  # the real stylesheet costs time per widget
+    long_ur = " ".join([URDU] * 6)  # Session 19 lines are 20-25 s of speech
+    data = [Segment(i, i * 10.0, i * 10.0 + 8, "ur", 0.99, long_ur, "An English translation " * 12)
+            for i in range(800)]
     lst = LineList()
     lst.resize(1100, 700)
     lst.show()
-    t0 = time.perf_counter()
-    lst.set_segments(data)
-    qapp.processEvents()
-    assert time.perf_counter() - t0 < 1.0
+    try:
+        t0 = time.perf_counter()
+        lst.set_segments(data)
+        qapp.processEvents()
+        assert time.perf_counter() - t0 < 1.0
+        t0 = time.perf_counter()
+        lst.set_playing(5)
+        lst.set_playing(6)
+        qapp.processEvents()
+        assert (time.perf_counter() - t0) / 2 < 0.05  # moving the highlight stays instant
+        lst.scroll_to(790)  # a far line is reachable right away
+        assert 790 in lst.lines
+    finally:
+        qapp.setStyleSheet("")
 
 
 def test_playing_property_moves_without_rebuilding(qapp):
@@ -98,6 +114,9 @@ def test_long_line_edit_saves_whole_text(qapp):
     lst.edit_saved.connect(lambda i, t: saved.append(t))
     lst.start_edit(0)
     lst.editor.moveCursor(lst.editor.textCursor().MoveOperation.End)
+    qapp.processEvents()
+    line_h = lst.editor.fontMetrics().lineSpacing()
+    assert lst.editor.height() >= 6 * line_h  # opens tall enough for the whole 600-character line
     QTest.keyClicks(lst.editor, " end")
     QTest.keyClick(lst.editor, Qt.Key_Return)
     assert saved[0].endswith(" end") and len(saved[0]) == 604
@@ -170,3 +189,12 @@ def test_empty_class_shows_no_speech(qapp):
     lst = make(qapp, [])
     assert lst.empty_label.isVisibleTo(lst) and "No speech found" in lst.empty_label.text()
     assert lst.start_edit(0) is False
+
+
+def test_not_editable_while_processing(qapp):
+    lst = make(qapp)
+    lst.set_editable(False)
+    w = lst.lines[1]
+    assert lst.start_edit(1) is False and not w.edit_btn.isVisibleTo(w)
+    lst.set_editable(True)
+    assert w.edit_btn.isVisibleTo(w) and lst.start_edit(1)

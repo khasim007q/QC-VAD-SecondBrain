@@ -67,12 +67,24 @@ class FakePlayer(QObject):
     playbackStateChanged = Signal(object)
     durationChanged = Signal(int)
     errorOccurred = Signal(object, str)
+    mediaStatusChanged = Signal(object)
 
-    def __init__(self):
+    def __init__(self, loading=False):
         super().__init__()
         self.pos, self.state, self.rate, self.pitch, self.src = 0, QMediaPlayer.StoppedState, 1.0, False, None
+        self.loading = loading
+        self.status = QMediaPlayer.LoadedMedia
 
-    def setSource(self, url): self.src = url
+    def setSource(self, url):
+        self.src = url
+        self.status = QMediaPlayer.LoadingMedia if self.loading else QMediaPlayer.LoadedMedia
+
+    def mediaStatus(self): return self.status
+
+    def finish_loading(self):
+        self.status = QMediaPlayer.LoadedMedia
+        self.mediaStatusChanged.emit(self.status)
+
     def setAudioOutput(self, out): pass
     def play(self): self.state = QMediaPlayer.PlayingState; self.playbackStateChanged.emit(self.state)
     def pause(self): self.state = QMediaPlayer.PausedState; self.playbackStateChanged.emit(self.state)
@@ -80,7 +92,13 @@ class FakePlayer(QObject):
     def playbackState(self): return self.state
     def position(self): return self.pos
     def duration(self): return 60_000
-    def setPosition(self, ms): self.pos = ms; self.positionChanged.emit(ms)
+
+    def setPosition(self, ms):
+        if self.status == QMediaPlayer.LoadingMedia:
+            return  # like Qt 6.12: a seek while loading is ignored
+        self.pos = ms
+        self.positionChanged.emit(ms)
+
     def setPlaybackRate(self, r): self.rate = r
     def setPitchCompensation(self, on): self.pitch = on
 
@@ -89,12 +107,12 @@ class FakePlayer(QObject):
         self.positionChanged.emit(ms)
 
 
-def make_playback(devices=None):
-    fake = FakePlayer()
+def make_playback(devices=None, segs=None, loading=False):
+    fake = FakePlayer(loading=loading)
     state = {"devices": devices or [("a", "Speakers"), ("b", "JBL Quantum 300")], "default": "a", "set": []}
     pb = Playback(player=fake, devices=lambda: (state["devices"], state["default"]),
                   set_device=lambda d: state["set"].append(d))
-    pb.set_segments(SEGS)
+    pb.set_segments(segs or SEGS)
     pb.set_source("C:/class.mp3")
     return pb, fake, state
 
@@ -107,7 +125,7 @@ def test_stop_after_line_pauses_at_the_line_end(qapp):
     fake.advance(15_000)
     assert fake.state == QMediaPlayer.PlayingState
     fake.advance(20_050)
-    assert fake.state == QMediaPlayer.PausedState and fake.pos == 20_000
+    assert fake.state == QMediaPlayer.PausedState and fake.pos == 19_999  # parked inside the line
 
 
 def test_without_stop_after_line_playback_continues(qapp):
@@ -206,4 +224,64 @@ def test_a_jump_past_the_stop_point_does_not_pause(qapp):
     pb.seek_ms(45_000)  # the user jumped to line 2
     assert fake.state == QMediaPlayer.PlayingState
     fake.advance(50_100)
-    assert fake.state == QMediaPlayer.PausedState and fake.pos == 50_000
+    assert fake.state == QMediaPlayer.PausedState and fake.pos == 49_999
+
+
+TOUCH = [Segment(0, 10.0, 20.0, "ur", .9, "a", "A"), Segment(1, 20.0, 30.0, "ur", .9, "b", "B")]
+
+
+def test_stop_keeps_the_stopped_line_current_when_lines_touch(qapp):
+    pb, fake, _ = make_playback(segs=TOUCH)
+    seen = []
+    pb.line_changed.connect(seen.append)
+    pb.set_stop_after_line(True)
+    pb.seek_ms(10_000)
+    pb.play()
+    fake.advance(19_900)
+    fake.advance(20_050)
+    assert fake.state == QMediaPlayer.PausedState and seen == [0]
+    pb.replay_line()
+    assert fake.pos == 10_000
+
+
+@pytest.mark.parametrize("gap", [0.0, 1.2])
+def test_next_line_jumps_instead_of_stopping(qapp, gap):
+    segs = [Segment(0, 10.0, 20.0, "ur", .9, "a", "A"), Segment(1, 20.0 + gap, 30.0, "ur", .9, "b", "B")]
+    pb, fake, _ = make_playback(segs=segs)
+    pb.set_stop_after_line(True)
+    pb.seek_ms(15_000)
+    pb.play()
+    pb.next_line()
+    assert fake.state == QMediaPlayer.PlayingState and fake.pos == int((20.0 + gap) * 1000)
+
+
+def test_replaying_a_stopped_line_stops_again(qapp):
+    pb, fake, _ = make_playback()  # SEGS has a gap after line 1
+    pb.set_stop_after_line(True)
+    pb.seek_ms(20_000)
+    pb.play()
+    fake.advance(29_900)
+    fake.advance(30_050)
+    assert fake.state == QMediaPlayer.PausedState
+    pb.play_segment(1)
+    assert fake.state == QMediaPlayer.PlayingState and fake.pos == 20_000
+    fake.advance(29_900)
+    fake.advance(30_050)
+    assert fake.state == QMediaPlayer.PausedState
+
+
+def test_seek_while_loading_is_applied_once_loaded(qapp):
+    pb, fake, _ = make_playback(loading=True)
+    pb.seek_ms(12_000)
+    assert fake.pos == 0
+    fake.finish_loading()
+    assert fake.pos == 12_000
+
+
+def test_output_list_changes_are_announced(qapp):
+    pb, fake, state = make_playback()
+    got = []
+    pb.outputs_changed.connect(lambda: got.append(pb.outputs()))
+    state["devices"] = [("a", "Speakers"), ("b", "JBL Quantum 300"), ("c", "USB headset")]
+    pb.devices_changed()
+    assert got and ("c", "USB headset") in got[-1]

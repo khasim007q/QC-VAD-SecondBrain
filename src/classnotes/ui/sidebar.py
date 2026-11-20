@@ -94,6 +94,12 @@ class Sidebar(QWidget):
         if self.search.text():
             self.flush_search()
 
+    def update_record(self, rec: ClassRecord) -> None:
+        """An open class changed (an edit, a check): search sees it at once."""
+        self._index.replace(rec)
+        if self.search.text():
+            self.flush_search()
+
     def select_class(self, class_id: str | None) -> None:
         self.classes.blockSignals(True)
         self.classes.setCurrentRow(-1)

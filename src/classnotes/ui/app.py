@@ -23,6 +23,17 @@ def ensure_streams(log_path: Path):
     return log
 
 
+def build_window(app, settings=None, persist: bool = True):
+    """The main window, styled for the theme setting before it is first shown."""
+    from .main_window import MainWindow
+
+    win = MainWindow(settings, persist_settings=persist)
+    win.apply_theme()  # also redraws the player icons for a dark start
+    # "Follow Windows": restyle live when Windows switches between light and dark.
+    app.styleHints().colorSchemeChanged.connect(lambda *_: win.apply_theme())
+    return win
+
+
 def main() -> int:
     from .. import paths
 
@@ -31,22 +42,17 @@ def main() -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
-    from .main_window import MainWindow
 
     if sys.platform == "win32":  # own taskbar entry and icon instead of python's
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClassNotes.App")
-    from . import theme
 
     app = QApplication(sys.argv)
     app.setApplicationName("Class Notes")
     app.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.ico"))))
     app.setStyle("Fusion")  # a neutral base that the stylesheet fully colours
-    win = MainWindow()
-    theme.apply(app, win.settings)
-    # "Follow Windows": restyle live when Windows switches between light and dark.
-    app.styleHints().colorSchemeChanged.connect(lambda *_: win.apply_theme())
+    win = build_window(app)
     win.show()
     return app.exec()
 

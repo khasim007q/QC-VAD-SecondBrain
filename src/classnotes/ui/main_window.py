@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
         pb.line_changed.connect(self._line_changed)
         pb.position.connect(self._position)
         pb.playing_changed.connect(bar.set_playing)
+        pb.outputs_changed.connect(lambda: bar.set_outputs(pb.outputs(), self.settings.audio_output))
         pb.status.connect(lambda m: self.statusBar().showMessage(m, 10000))
         pb.error.connect(lambda m: self.statusBar().showMessage(f"{m} Try another output.", 15000))
         bar.play_clicked.connect(pb.toggle)
@@ -213,6 +214,27 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence(seq), self, activated=lambda fn=fn: self._guarded(fn))
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.sidebar.focus_search)
 
+    def _ask_edit(self) -> str:
+        """'save', 'discard' or 'cancel' for a half-typed edit (tests replace this)."""
+        box = QMessageBox(QMessageBox.Question, "Unsaved change",
+                          "You are editing a line. Save the change first?",
+                          QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, self)
+        box.setDefaultButton(QMessageBox.Save)
+        return {QMessageBox.Save: "save", QMessageBox.Discard: "discard"}.get(box.exec(), "cancel")
+
+    def _settle_edit(self) -> bool:
+        """Before anything that would replace the list: deal with an open edit. False = stay."""
+        if not self.lines.is_editing():
+            return True
+        answer = self._ask_edit()
+        if answer == "cancel":
+            return False
+        if answer == "save":
+            self.lines.save_edit()
+        else:
+            self.lines.cancel_edit()
+        return True
+
     def _guarded(self, fn) -> None:
         """Run a listening shortcut only when a class with lines is open and nobody is typing."""
         focus = QApplication.focusWidget()
@@ -232,7 +254,9 @@ class MainWindow(QMainWindow):
             self.open_class(select_id)
 
     def open_class(self, class_id: str) -> None:
-        if self.worker is not None:
+        if self.worker is not None or not self._settle_edit():
+            if self.record is not None:
+                self.sidebar.select_class(self.record.class_id)
             return
         try:
             rec = store.load_record(store.class_dir(self.library_dir(), class_id))
@@ -244,7 +268,7 @@ class MainWindow(QMainWindow):
     def open_hit(self, class_id: str, seg_id: int) -> None:
         if self.record is None or self.record.class_id != class_id:
             self.open_class(class_id)
-        if self.record is None or seg_id < 0:
+        if self.record is None or self.record.class_id != class_id or seg_id < 0:
             return
         seg = self._seg(seg_id)
         if seg is not None:
@@ -265,6 +289,7 @@ class MainWindow(QMainWindow):
         self.playback.set_source(rec.audio_path if audio_ok else None)
         self.bar.set_controls_enabled(audio_ok)
         self.bar.set_position(0, int(rec.duration_s * 1000))
+        self.lines.set_editable(True)
         self.lines.set_segments(rec.segments)
         self.stack.setCurrentWidget(self.lines)
         self.sidebar.select_class(rec.class_id)
@@ -370,6 +395,7 @@ class MainWindow(QMainWindow):
         seg.text_edited = text
         self._save_current()
         self.lines.update_segment(seg_id)
+        self.sidebar.update_record(self.record)
         self._refresh_counts()
 
     def mark_checked(self, seg_id: int) -> None:
@@ -378,6 +404,7 @@ class MainWindow(QMainWindow):
             return
         seg.checked = True
         self._save_current()
+        self.sidebar.update_record(self.record)
         self.lines.update_segment(seg_id)
         self._refresh_counts()
 
@@ -396,6 +423,8 @@ class MainWindow(QMainWindow):
     def locate_audio(self) -> None:
         if self.record is None:
             return
+        if not self._settle_edit():
+            return
         f, _ = QFileDialog.getOpenFileName(self, "Locate the class recording", "", AUDIO_FILTER)
         if f:
             self.record.audio_path = str(Path(f).resolve())
@@ -404,6 +433,8 @@ class MainWindow(QMainWindow):
 
     # ================= processing =================
     def new_class(self) -> None:
+        if not self._settle_edit():
+            return
         dlg = NewClassDialog(self)
         if dlg.exec():
             path, day, title = dlg.values()
@@ -411,7 +442,7 @@ class MainWindow(QMainWindow):
 
     def reprocess(self) -> None:
         rec = self.record
-        if rec is None:
+        if rec is None or not self._settle_edit():
             return
         if not Path(rec.audio_path).is_file():
             QMessageBox.information(self, "Recording missing", "Locate the recording first.")
@@ -441,6 +472,7 @@ class MainWindow(QMainWindow):
         self.proc_bar.setValue(0)
         self.proc_status.setText("Starting…")
         self.lines.set_segments([])
+        self.lines.set_editable(False)  # lines being made can't be edited yet
         self.stack.setCurrentWidget(self.lines)
 
         self.worker = ProcessWorker(path, title, day, self.settings, class_id, self)
@@ -496,9 +528,12 @@ class MainWindow(QMainWindow):
         on screen, including an edit in progress."""
         name = theme.apply(QApplication.instance(), self.settings)
         self.bar.refresh_icons()
+        self.lines.restyle()
         return name
 
     def open_settings(self) -> None:
+        if not self._settle_edit():
+            return
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
             old_lib = self.library_dir()
@@ -542,6 +577,9 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def closeEvent(self, event) -> None:
+        if not self._settle_edit():
+            event.ignore()
+            return
         if self.worker is not None and hasattr(self.worker, "wait"):
             ok = QMessageBox.question(self, "Processing", "A recording is still processing. Stop and quit?")
             if ok != QMessageBox.Yes:

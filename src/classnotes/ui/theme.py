@@ -103,10 +103,7 @@ QPushButton::menu-indicator { width: 0; }
 
 #LineList, #LineList > QWidget > QWidget#LineHost { background: $page; border: none; }
 #Line { background: transparent; border: 1px solid transparent; border-radius: 12px; }
-#Line:hover { background: $hover; }
-#Line[playing="true"] { background: $panel; border: 1px solid $line_strong; }
 QLabel#Time { font-family: "$mono"; font-size: 13px; color: $muted; }
-#Line[playing="true"] QLabel#Time { color: $accent; }
 QLabel#Lang, QLabel#Tag { font-size: 13px; color: $muted; }
 QLabel#English { font-size: 17px; }
 QLabel#Urdu { font-family: "$urdu"; font-size: 19px; color: $urdu; }

@@ -3,7 +3,8 @@ property, so nothing is rebuilt), the English can be edited in place, and lines 
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget,
@@ -11,8 +12,12 @@ from PySide6.QtWidgets import (
 
 from ..flags import flag_reason
 from ..store import Segment, display_text, fmt_clock
+from . import theme
 
 LANG_NAME = {"ur": "Urdu", "en": "English", "ar": "Recitation"}
+FIRST_LINES = 30  # built at once when a class opens; the rest follow in batches
+BATCH_LINES = 40
+BATCH_DELAY_MS = 15
 
 
 def _link(text: str) -> QPushButton:
@@ -23,10 +28,6 @@ def _link(text: str) -> QPushButton:
     b.setFocusPolicy(Qt.NoFocus)
     return b
 
-
-def _repolish(w: QWidget) -> None:
-    w.style().unpolish(w)
-    w.style().polish(w)
 
 
 class Editor(QPlainTextEdit):
@@ -41,6 +42,11 @@ class Editor(QPlainTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setTabChangesFocus(True)
         self.document().contentsChanged.connect(self._fit)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if e.oldSize().width() != e.size().width():
+            self._fit()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & Qt.ShiftModifier):
@@ -61,8 +67,8 @@ class LineWidget(QFrame):
         super().__init__()
         self.seg, self.owner = seg, owner
         self.setObjectName("Line")
-        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setProperty("playing", False)
+        self._hover = False
         self.setProperty("flagged", False)
         self.setCursor(Qt.PointingHandCursor)
 
@@ -102,6 +108,7 @@ class LineWidget(QFrame):
         for w in (self.flag_label, self.tag, self.edit_btn, self.revert_btn, self.looks_fine_btn):
             tools.addWidget(w)
         tools.addStretch(1)
+        self.tools = tools
 
         self.body = QVBoxLayout()
         self.body.setSpacing(8)
@@ -131,18 +138,42 @@ class LineWidget(QFrame):
         self.flag_label.setVisible(bool(reason))
         self.tag.setText("Recitation, not translated" if recitation else ("edited" if seg.text_edited else ""))
         self.tag.setVisible(bool(self.tag.text()))
-        self.edit_btn.setVisible(not recitation)
-        self.revert_btn.setVisible(bool(seg.text_edited))
-        self.looks_fine_btn.setVisible(bool(reason))
-        if self.property("flagged") != bool(reason):
-            self.setProperty("flagged", bool(reason))
-            _repolish(self)
+        editable = self.owner.editable and self.owner._editing != seg.id
+        self.edit_btn.setVisible(editable and not recitation)
+        self.revert_btn.setVisible(editable and bool(seg.text_edited))
+        self.looks_fine_btn.setVisible(editable and bool(reason))
+        self.setProperty("flagged", bool(reason))
 
     def set_playing(self, on: bool) -> None:
         if self.property("playing") != on:
             self.setProperty("playing", on)
-            _repolish(self)
-            _repolish(self.time)
+            t = theme.current()["tokens"]
+            colour = t["accent"] if on else t["muted"]
+            self.time.setText(f"<span style='color:{colour}'>{fmt_clock(self.seg.start)}</span>")
+            self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        playing = self.property("playing")
+        if playing or self._hover:
+            t = theme.current()["tokens"]
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            p.setBrush(QColor(t["panel"] if playing else t["hover"]))
+            p.setPen(QPen(QColor(t["line_strong"]), 1) if playing else Qt.NoPen)
+            p.drawRoundedRect(r, 12, 12)
+            p.end()
+        super().paintEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and not self.owner.is_editing():
@@ -171,6 +202,9 @@ class LineList(QScrollArea):
         self.editor: Editor | None = None
         self._editing: int | None = None
         self._auto = False  # True while the list itself scrolls
+        self.editable = True
+        self._pending: list[Segment] = []  # lines not built yet
+        self._batch_timer = QTimer(self, singleShot=True, interval=BATCH_DELAY_MS, timeout=self._build_batch)
 
         self.host = QWidget()
         self.host.setObjectName("LineHost")
@@ -198,24 +232,49 @@ class LineList(QScrollArea):
             if item.widget() and item.widget() is not self.empty_label:
                 item.widget().deleteLater()
         self.lines, self.segments, self.playing = {}, list(segments), None
-        for seg in self.segments:
-            w = LineWidget(seg, self)
-            w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-            self.lines[seg.id] = w
-            self.layout_.addWidget(w)
+        self._batch_timer.stop()
         self.layout_.addWidget(self.empty_label)
         self.empty_label.setVisible(not self.segments)
         self.layout_.addStretch(1)
+        self._pending = list(self.segments)
+        self._build(FIRST_LINES)
         self.setUpdatesEnabled(True)
         self._set_following(True)
 
-    def append_segment(self, seg: Segment) -> None:
-        """Add one line at the end (while a class is being processed) without rebuilding."""
-        self.segments.append(seg)
+    def _add_line(self, seg: Segment) -> None:
         w = LineWidget(seg, self)
         w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.lines[seg.id] = w
         self.layout_.insertWidget(self.layout_.indexOf(self.empty_label), w)
+
+    def _build(self, n: int) -> None:
+        for seg in self._pending[:n]:
+            self._add_line(seg)
+        del self._pending[:n]
+        if self._pending:
+            self._batch_timer.start()
+
+    def _build_batch(self) -> None:
+        self._build(BATCH_LINES)
+
+    def _ensure_built(self, seg_id: int | None) -> None:
+        """Build every line up to `seg_id` now (e.g. jumping far into a class just opened)."""
+        if seg_id is None or seg_id in self.lines or not self._pending:
+            return
+        ids = [s.id for s in self._pending]
+        if seg_id in ids:
+            self._build(ids.index(seg_id) + 1)
+
+    def set_editable(self, on: bool) -> None:
+        """Off while a class is being processed: nothing can be edited or marked yet."""
+        self.editable = on
+        for w in self.lines.values():
+            w.refresh()
+
+    def append_segment(self, seg: Segment) -> None:
+        """Add one line at the end (while a class is being processed) without rebuilding."""
+        self.segments.append(seg)
+        self._add_line(seg)
         self.empty_label.hide()
 
     def update_segment(self, seg_id: int) -> None:
@@ -225,6 +284,7 @@ class LineList(QScrollArea):
 
     # ----- playing line and following -----
     def set_playing(self, seg_id: int | None) -> None:
+        self._ensure_built(seg_id)
         if self.playing in self.lines:
             self.lines[self.playing].set_playing(False)
         self.playing = seg_id
@@ -234,6 +294,7 @@ class LineList(QScrollArea):
                 self._show(seg_id)
 
     def scroll_to(self, seg_id: int) -> None:
+        self._ensure_built(seg_id)
         self._set_following(True)
         self._show(seg_id)
 
@@ -247,7 +308,6 @@ class LineList(QScrollArea):
         if w is None:
             return
         self._auto = True
-        self.host.layout().activate()
         bar = self.verticalScrollBar()
         target = w.y() + w.height() // 2 - self.viewport().height() // 2
         if not (bar.value() <= w.y() and w.y() + w.height() <= bar.value() + self.viewport().height() - 80):
@@ -291,8 +351,9 @@ class LineList(QScrollArea):
         return self.editor.toPlainText() if self.editor is not None else None
 
     def start_edit(self, seg_id: int) -> bool:
+        self._ensure_built(seg_id)
         w = self.lines.get(seg_id)
-        if w is None or w.seg.lang == "ar" or self.is_editing():
+        if w is None or w.seg.lang == "ar" or self.is_editing() or not self.editable:
             return False
         self._editing = seg_id
         self.editor = Editor(w)
@@ -304,12 +365,29 @@ class LineList(QScrollArea):
         w.english.hide()
         w.body.insertWidget(0, self.editor)
         w.body.insertWidget(1, self._hint)
-        w.edit_btn.hide()
+        w.refresh()  # hides this line's links while it is being edited
         self.editor._fit()
+        QTimer.singleShot(0, lambda ed=self.editor: ed is self.editor and ed._fit())  # once laid out
         self.editor.setFocus()
         self.editor.moveCursor(self.editor.textCursor().MoveOperation.End)
         self.edit_started.emit(seg_id)
         return True
+
+    def save_edit(self) -> None:
+        if self.is_editing():
+            self._save()
+
+    def cancel_edit(self) -> None:
+        if self.is_editing():
+            self._cancel()
+
+    def restyle(self) -> None:
+        """After a theme change: recolour the painted highlight and the playing line's time."""
+        w = self.lines.get(self.playing)
+        if w is not None:
+            w.setProperty("playing", False)
+            w.set_playing(True)
+        self.viewport().update()
 
     def _save(self) -> None:
         seg_id, text = self._editing, self.edit_text().strip()

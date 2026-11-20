@@ -38,6 +38,7 @@ def window(qapp, tmp_path, rec=None, with_audio=True, open_it=True):
     pb = Playback(player=fake, devices=lambda: ([("a", "Speakers")], "a"), set_device=lambda d: None)
     win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False, playback=pb)
     win._alert = lambda title, msg: win.alerts.append(msg)
+    win._ask_edit = lambda: "discard"  # tests that close mid-edit must not block on the dialog
     win.alerts = []
     win.resize(1280, 800)
     win.show()
@@ -281,4 +282,72 @@ def test_editing_pauses_and_save_resumes(qapp, tmp_path):
     key(qapp, win, Qt.Key_E)
     QTest.keyClick(win.lines.editor, Qt.Key_Escape)
     assert fake.state == QMediaPlayer.PlayingState
+    win.close()
+
+
+# ---------- review fixes ----------
+def test_edit_links_are_hidden_while_processing(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path, open_it=False)
+    win.worker = object()
+    win.lines.set_segments([])
+    win.lines.set_editable(False)
+    win._on_segment(Segment(0, 1, 2, "ur", .9, "اردو", "Urdu"))
+    assert win.lines.start_edit(0) is False
+    win.worker = None
+    win.close()
+
+
+@pytest.mark.parametrize("answer", ["save", "discard", "cancel"])
+def test_switching_class_mid_edit_asks_first(qapp, tmp_path, answer):
+    win, _ = window(qapp, tmp_path)
+    store.save_record(make_record("2026-11-11"), tmp_path)
+    win.refresh_library()
+    win._ask_edit = lambda: answer
+    win.lines.start_edit(0)
+    win.lines.editor.setPlainText("Half typed")
+    win.sidebar.class_selected.emit("2026-11-11")
+    qapp.processEvents()
+    saved = store.load_record(tmp_path / "2026-11-18").segments[0].text_edited
+    if answer == "cancel":
+        assert win.record.class_id == "2026-11-18" and win.lines.is_editing()
+    else:
+        assert win.record.class_id == "2026-11-11" and not win.lines.is_editing()
+        assert saved == ("Half typed" if answer == "save" else None)
+    win.close()
+
+
+def test_output_list_refreshes_in_the_bar(qapp, tmp_path):
+    from classnotes.ui.main_window import MainWindow
+
+    store.save_record(make_record(), tmp_path)
+    state = {"devices": [("a", "Speakers")]}
+    pb = Playback(player=FakePlayer(), devices=lambda: (state["devices"], "a"), set_device=lambda d: None)
+    win = MainWindow(Settings(library_dir=str(tmp_path)), persist_settings=False, playback=pb)
+    assert win.bar.output.count() == 2  # Windows default + Speakers
+    state["devices"] = [("a", "Speakers"), ("c", "USB headset")]
+    pb.devices_changed()
+    assert win.bar.output.count() == 3 and win.bar.output.itemText(2) == "USB headset"
+    win.close()
+
+
+def test_search_sees_edits_made_this_session(qapp, tmp_path):
+    win, _ = window(qapp, tmp_path)
+    win.apply_edit(0, "A brand new wording")
+    win.sidebar.search.setText("brand new")
+    win.sidebar.flush_search()
+    assert any(win.sidebar.results.item(i).data(Qt.UserRole) == ("2026-11-18", 0)
+               for i in range(win.sidebar.results.count()))
+    win.close()
+
+
+def test_dark_theme_at_startup_draws_light_icons(qapp, tmp_path):
+    from classnotes.ui import app as app_mod
+    from classnotes.ui import theme
+
+    store.save_record(make_record(), tmp_path)
+    win = app_mod.build_window(qapp, Settings(library_dir=str(tmp_path), theme="dark"), persist=False)
+    img = win.bar.next_btn.icon().pixmap(40, 40).toImage()
+    ink = max((img.pixelColor(x, y) for x in range(40) for y in range(40)), key=lambda c: c.alpha())
+    assert ink.lightness() > 150  # bone-coloured, not near-black
+    theme.apply(qapp, Settings(theme="light"))
     win.close()

@@ -17,6 +17,8 @@ from ..store import Segment, fmt_clock
 from . import theme
 
 RATES = (0.75, 1.0, 1.25, 1.5)
+_READY = (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferingMedia, QMediaPlayer.BufferedMedia,
+          QMediaPlayer.EndOfMedia)
 RESTART_AFTER_S = 1.0  # "previous" more than this far into a line restarts it
 
 
@@ -71,6 +73,7 @@ class Playback(QObject):
     playing_changed = Signal(bool)
     status = Signal(str)
     error = Signal(str)
+    outputs_changed = Signal()  # a sound output was plugged in or removed
 
     def __init__(self, parent=None, player=None,
                  devices: Callable[[], tuple[list[tuple[str, str]], str]] | None = None,
@@ -99,8 +102,15 @@ class Playback(QObject):
         self._device = None
         self._last_default = None
         self._names: dict[str, str] = {}
+        self._last_devs: list[tuple[str, str]] | None = None
+        self._prev_ms = 0
+        self._seek_target: int | None = None
+        self._parking = False
+        self._pending_ms: int | None = None
         player.setPitchCompensation(True)
         player.positionChanged.connect(self._on_position)
+        if hasattr(player, "mediaStatusChanged"):
+            player.mediaStatusChanged.connect(self._on_media_status)
         player.playbackStateChanged.connect(
             lambda s: self.playing_changed.emit(s == QMediaPlayer.PlayingState))
         player.errorOccurred.connect(lambda _e, msg: self.error.emit(msg or "The recording could not be played."))
@@ -111,7 +121,8 @@ class Playback(QObject):
         self._player.stop()
         self._has_source = bool(path)
         self._player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
-        self._line, self._stop_at = None, None
+        self._line, self._stop_at, self._pending_ms, self._seek_target = None, None, None, None
+        self._prev_ms, self._parking = 0, False
 
     def has_source(self) -> bool:
         return self._has_source
@@ -139,8 +150,25 @@ class Playback(QObject):
             self.play()
 
     def seek_ms(self, ms: int) -> None:
-        if self._has_source:
-            self._player.setPosition(max(0, int(ms)))
+        """A jump the user asked for: it never triggers stop-after-line, and re-arms it for the
+        line it lands on. While the recording is still loading, the jump waits until it can apply."""
+        if not self._has_source:
+            return
+        ms = max(0, int(ms))
+        if not self._loaded():
+            self._pending_ms = ms
+            return
+        self._seek_target = ms
+        self._player.setPosition(ms)
+
+    def _loaded(self) -> bool:
+        status = getattr(self._player, "mediaStatus", None)
+        return status is None or status() in _READY
+
+    def _on_media_status(self, status) -> None:
+        if status in _READY and self._pending_ms is not None:
+            ms, self._pending_ms = self._pending_ms, None
+            self.seek_ms(ms)
 
     def play_segment(self, seg_id: int) -> None:
         seg = next((s for s in self._segments if s.id == seg_id), None)
@@ -164,7 +192,6 @@ class Playback(QObject):
         idx = self._line if self._line is not None else step_line(self._segments, self._player.position() / 1000, -1)
         if idx is not None:
             self._jump(idx)
-            self._arm(idx)
             self.play()
 
     def set_rate(self, rate: float) -> None:
@@ -180,14 +207,31 @@ class Playback(QObject):
         self._stop_at = int(self._segments[idx].end * 1000) if (self._stop_after and idx is not None) else None
 
     def _on_position(self, ms: int) -> None:
-        # Stop first: when lines touch, the position past the end already belongs to the next line.
-        if (self._stop_at is not None and self.is_playing() and self._line is not None
-                and self._stop_at <= ms < self._stop_at + 1500):
-            stop = self._stop_at
-            self._stop_at = None
-            self._player.pause()
-            self._player.setPosition(stop)
+        if self._parking:  # our own move back into the stopped line: nothing else changes
+            self._parking = False
+            self._prev_ms = ms
+            self.position.emit(ms)
             return
+        if self._seek_target is not None:  # the user jumped: follow, and re-arm for that line
+            self._seek_target = None
+            self._prev_ms = ms
+            self.position.emit(ms)
+            idx = segment_at(self._segments, ms / 1000)
+            if idx is not None and idx != self._line:
+                self._line = idx
+                self.line_changed.emit(self._segments[idx].id)
+            self._arm(idx)
+            return
+        # Normal playback crossed the playing line's end: pause, parked just inside that line
+        # (when lines touch, the end time already belongs to the next one).
+        if (self._stop_at is not None and self.is_playing()
+                and self._prev_ms < self._stop_at <= ms):
+            stop, self._stop_at = self._stop_at, None
+            self._player.pause()
+            self._parking = True
+            self._player.setPosition(stop - 1)
+            return
+        self._prev_ms = ms
         self.position.emit(ms)
         idx = segment_at(self._segments, ms / 1000)
         if idx is not None and idx != self._line:
@@ -210,6 +254,9 @@ class Playback(QObject):
     def _apply_output(self) -> None:
         devs, default = self._devices()
         self._names.update(dict(devs))
+        if devs != self._last_devs:
+            self._last_devs = list(devs)
+            self.outputs_changed.emit()
         chosen, fell_back = pick_output(devs, self._wanted, default)
         self._last_default = default
         if chosen != self._device:
