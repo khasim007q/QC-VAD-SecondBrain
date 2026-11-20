@@ -34,6 +34,10 @@ class Settings:
     whisper_model: str = "large-v3-turbo"  # or "large-v3": ~2-3x slower, the original model
     batch_size: int = 8  # blocks per GPU pass (halved automatically if the GPU runs out of memory)
     library_dir: str = field(default_factory=_default_library)
+    audio_output: str = ""  # sound output device id; "" follows the Windows default
+    playback_rate: float = 1.0
+    stop_after_line: bool = False
+    theme: str = "system"  # "system" (follow Windows) | "light" | "dark"
 
     @staticmethod
     def path():

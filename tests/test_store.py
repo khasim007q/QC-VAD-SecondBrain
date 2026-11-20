@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import json
 
 from classnotes import store
@@ -167,3 +168,23 @@ def test_srt_keeps_a_multiline_edit_in_one_block():
     blocks = store.render_srt(rec).strip().split("\n\n")
     assert len(blocks) == 2
     assert "first line\nsecond line" in blocks[0]
+
+
+def test_schema1_file_loads_with_new_defaults(tmp_path):
+    folder = tmp_path / "c"
+    folder.mkdir()
+    old = asdict(make_record())
+    old["schema_version"] = 1
+    for s in old["segments"]:
+        for k in ("asr_logprob", "mt_score", "checked"):
+            s.pop(k, None)
+    (folder / "segments.json").write_text(json.dumps(old, ensure_ascii=False), "utf-8")
+    seg = store.load_record(folder).segments[0]
+    assert (seg.asr_logprob, seg.mt_score, seg.checked) == (None, None, False)
+
+
+def test_new_fields_roundtrip_and_schema_is_2(tmp_path):
+    rec = make_record()
+    rec.segments[0].asr_logprob, rec.segments[0].mt_score, rec.segments[0].checked = -0.42, -0.9, True
+    loaded = store.load_record(store.save_record(rec, tmp_path))
+    assert loaded == rec and loaded.schema_version == 2

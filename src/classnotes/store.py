@@ -34,6 +34,9 @@ class Segment:
     text_edited: str | None = None  # human correction; never replaces `text`
     surah: str | None = None
     topic: str | None = None
+    asr_logprob: float | None = None  # Whisper's average log-probability (None: unknown)
+    mt_score: float | None = None  # NLLB's average token log-probability (Urdu lines only)
+    checked: bool = False  # the reviewer marked this line "Looks fine"
 
 
 @dataclass
@@ -46,7 +49,7 @@ class ClassRecord:
     models: dict
     created_at: str
     segments: list[Segment] = field(default_factory=list)
-    schema_version: int = 1
+    schema_version: int = 2
 
 
 def display_text(seg: Segment) -> str:
